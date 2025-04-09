@@ -1,11 +1,15 @@
 # SQL Server Monitoring and Job Status Script
-# Lester Artis 03/21/2025
+# Lester Artis 04/08/2025
 # This script monitors SQL Server instances for job status, backups, disk space, and more
 
 # Network paths and settings
 $serverListPath = ""
 $logFolderPath = ""
 $backupRetentionDays = 30
+
+# Disk space thresholds (percentages)
+$diskSpaceCriticalThreshold = 10  # Critical threshold - emergency cleanup triggered
+$diskSpaceWarningThreshold = 20   # Warning threshold - alert only
 
 # Function to get SQL Server job statuses from a remote server
 function Get-SQLServerJobStatus {
@@ -809,6 +813,277 @@ function Remove-OldBackups {
     }
 }
 
+# Function to handle low disk space emergency situations
+function Invoke-EmergencyDiskCleanup {
+    param(
+        [string]$ComputerName,
+        [string]$DriveLetter,
+        [System.Management.Automation.PSCredential]$Credential = $null
+    )
+    
+    Write-Host "EMERGENCY: Performing disk cleanup on $ComputerName drive $DriveLetter due to critically low space..." -ForegroundColor Red
+    
+    try {
+        # Use Invoke-Command to perform emergency cleanup remotely
+        $cleanupResults = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+            param($DriveLetter)
+            
+            # Load SQL Server module if available
+            if (Get-Module -ListAvailable -Name SQLPS) {
+                Import-Module SQLPS -DisableNameChecking
+            }
+            elseif (Get-Module -ListAvailable -Name SqlServer) {
+                Import-Module SqlServer
+            }
+            
+            $results = @()
+            $totalSpaceReclaimed = 0
+            $totalFilesDeleted = 0
+            
+            # Clean up temp files in Windows temp folder on the specific drive
+            try {
+                $drivePath = "$DriveLetter\"
+                $tempFolders = @(
+                    "$env:SystemRoot\Temp",
+                    "$env:TEMP"
+                ) | Where-Object { $_.StartsWith($drivePath) }
+                
+                foreach ($tempFolder in $tempFolders) {
+                    if (Test-Path $tempFolder) {
+                        # Get temp files
+                        $tempFiles = Get-ChildItem -Path $tempFolder -Recurse -File -ErrorAction SilentlyContinue
+                        $tempFilesSize = 0
+                        
+                        if ($tempFiles) {
+                            $tempFilesSize = [math]::Round(($tempFiles | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+                            $tempFilesCount = ($tempFiles | Measure-Object).Count
+                            
+                            # Remove temp files
+                            foreach ($file in $tempFiles) {
+                                try {
+                                    if (-not $file.PSIsContainer) {
+                                        Remove-Item -Path $file.FullName -Force -ErrorAction SilentlyContinue
+                                    }
+                                }
+                                catch {
+                                    # Ignore errors for individual files
+                                }
+                            }
+                            
+                            $results += [PSCustomObject]@{
+                                ActionType = "TempFiles"
+                                Path = $tempFolder
+                                SizeMB = $tempFilesSize
+                                Count = $tempFilesCount
+                                Status = "Cleaned"
+                            }
+                            
+                            $totalSpaceReclaimed += $tempFilesSize
+                            $totalFilesDeleted += $tempFilesCount
+                        }
+                    }
+                }
+            }
+            catch {
+                $results += [PSCustomObject]@{
+                    ActionType = "TempFiles"
+                    Path = "Error"
+                    SizeMB = 0
+                    Count = 0
+                    Status = "Failed: $($_.Exception.Message)"
+                }
+            }
+            
+            # Clean up SQL Server backup files - more aggressive cleanup for emergency
+            try {
+                # Get all SQL instances on the server
+                $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue | 
+                    Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider | 
+                    Get-Member -MemberType NoteProperty | 
+                    Select-Object -ExpandProperty Name
+                
+                if (-not $instances) {
+                    $instances = @("MSSQLSERVER") # Default instance if none found
+                }
+                
+                foreach ($instance in $instances) {
+                    $instanceName = if ($instance -eq "MSSQLSERVER") { $env:COMPUTERNAME } else { "$($env:COMPUTERNAME)\$instance" }
+                    
+                    try {
+                        # Get server object
+                        $server = New-Object Microsoft.SqlServer.Management.Smo.Server($instanceName)
+                        
+                        # Get backup directory and check if it's on the specified drive
+                        $backupDir = $server.BackupDirectory
+                        
+                        if ($backupDir -and $backupDir.StartsWith($DriveLetter)) {
+                            if (Test-Path $backupDir) {
+                                # Get all log backups (.trn) files
+                                $logBackups = Get-ChildItem -Path $backupDir -Recurse -File -ErrorAction SilentlyContinue |
+                                    Where-Object { $_.Extension -eq '.trn' }
+                                
+                                if ($logBackups) {
+                                    $logBackupsSize = [math]::Round(($logBackups | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+                                    $logBackupsCount = ($logBackups | Measure-Object).Count
+                                    
+                                    # Delete log backups
+                                    foreach ($file in $logBackups) {
+                                        try {
+                                            Remove-Item -Path $file.FullName -Force -ErrorAction SilentlyContinue
+                                        }
+                                        catch {
+                                            # Ignore errors for individual files
+                                        }
+                                    }
+                                    
+                                    $results += [PSCustomObject]@{
+                                        ActionType = "SQLLogBackups"
+                                        Path = $backupDir
+                                        SizeMB = $logBackupsSize
+                                        Count = $logBackupsCount
+                                        Status = "Cleaned"
+                                    }
+                                    
+                                    $totalSpaceReclaimed += $logBackupsSize
+                                    $totalFilesDeleted += $logBackupsCount
+                                }
+                                
+                                # Get old full backups - older than 7 days in emergency
+                                $cutoffDate = (Get-Date).AddDays(-7)
+                                $oldFullBackups = Get-ChildItem -Path $backupDir -Recurse -File -ErrorAction SilentlyContinue |
+                                    Where-Object { $_.Extension -eq '.bak' -and $_.LastWriteTime -lt $cutoffDate }
+                                
+                                if ($oldFullBackups) {
+                                    $oldFullBackupsSize = [math]::Round(($oldFullBackups | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+                                    $oldFullBackupsCount = ($oldFullBackups | Measure-Object).Count
+                                    
+                                    # Delete old full backups except most recent ones
+                                    $databaseGroups = $oldFullBackups | Group-Object { $_.Name -replace '_.+$', '' }
+                                    
+                                    foreach ($group in $databaseGroups) {
+                                        # Keep the most recent backup for each database
+                                        $sortedFiles = $group.Group | Sort-Object LastWriteTime -Descending
+                                        
+                                        # Skip the most recent file, delete the rest
+                                        foreach ($file in $sortedFiles | Select-Object -Skip 1) {
+                                            try {
+                                                Remove-Item -Path $file.FullName -Force -ErrorAction SilentlyContinue
+                                            }
+                                            catch {
+                                                # Ignore errors for individual files
+                                            }
+                                        }
+                                    }
+                                    
+                                    $results += [PSCustomObject]@{
+                                        ActionType = "SQLOldFullBackups"
+                                        Path = $backupDir
+                                        SizeMB = $oldFullBackupsSize
+                                        Count = $oldFullBackupsCount
+                                        Status = "Cleaned (keeping most recent per database)"
+                                    }
+                                    
+                                    $totalSpaceReclaimed += $oldFullBackupsSize
+                                    $totalFilesDeleted += $oldFullBackupsCount
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        $results += [PSCustomObject]@{
+                            ActionType = "SQLBackupCleanup"
+                            Path = "Instance: $instanceName"
+                            SizeMB = 0
+                            Count = 0
+                            Status = "Failed: $($_.Exception.Message)"
+                        }
+                    }
+                }
+            }
+            catch {
+                $results += [PSCustomObject]@{
+                    ActionType = "SQLBackupCleanup"
+                    Path = "Error"
+                    SizeMB = 0
+                    Count = 0
+                    Status = "Failed: $($_.Exception.Message)"
+                }
+            }
+            
+            # Identify and clean large log files on the drive
+            try {
+                $largeLogFiles = Get-ChildItem -Path "$DriveLetter\" -Include *.log, *.ldf -Recurse -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Length -gt 100MB } |
+                    Sort-Object Length -Descending |
+                    Select-Object -First 10  # Limit to top 10 largest files to avoid excessive deletion
+                
+                if ($largeLogFiles) {
+                    $largeLogFilesSize = [math]::Round(($largeLogFiles | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+                    $largeLogFilesCount = ($largeLogFiles | Measure-Object).Count
+                    
+                    # Only clear SQL Server error logs - not database log files
+                    foreach ($file in $largeLogFiles) {
+                        if ($file.Name -match 'ERRORLOG' -or $file.Name -match 'SQL.*\.log') {
+                            try {
+                                # Clear the content instead of deleting
+                                Clear-Content -Path $file.FullName -Force -ErrorAction SilentlyContinue
+                            }
+                            catch {
+                                # Ignore errors for individual files
+                            }
+                        }
+                    }
+                    
+                    $results += [PSCustomObject]@{
+                        ActionType = "LargeLogFiles"
+                        Path = "$DriveLetter\"
+                        SizeMB = $largeLogFilesSize
+                        Count = $largeLogFilesCount
+                        Status = "SQL error logs cleared"
+                    }
+                    
+                    $totalSpaceReclaimed += $largeLogFilesSize
+                    $totalFilesDeleted += $largeLogFilesCount
+                }
+            }
+            catch {
+                $results += [PSCustomObject]@{
+                    ActionType = "LargeLogFiles"
+                    Path = "Error"
+                    SizeMB = 0
+                    Count = 0
+                    Status = "Failed: $($_.Exception.Message)"
+                }
+            }
+            
+            # Add summary
+            $results += [PSCustomObject]@{
+                ActionType = "SUMMARY"
+                Path = "$DriveLetter\"
+                SizeMB = $totalSpaceReclaimed
+                Count = $totalFilesDeleted
+                Status = "Emergency cleanup completed. Total space reclaimed: $totalSpaceReclaimed MB, Files processed: $totalFilesDeleted"
+            }
+            
+            return $results
+        } -ArgumentList $DriveLetter -ErrorAction Stop
+        
+        return $cleanupResults
+    }
+    catch {
+        Write-Host "Failed to perform emergency disk cleanup on $ComputerName drive $DriveLetter : $($_.Exception.Message)" -ForegroundColor Red
+        return @(
+            [PSCustomObject]@{
+                ActionType = "ERROR"
+                Path = "$DriveLetter\"
+                SizeMB = 0
+                Count = 0
+                Status = "Failed to perform cleanup: $($_.Exception.Message)"
+            }
+        )
+    }
+}
+
 # Ensure log directory exists
 if (-not (Test-Path $logFolderPath)) {
     try {
@@ -871,6 +1146,119 @@ foreach ($currentServer in $servers) {
         Write-Host "Started at: $(Get-Date)" -ForegroundColor Green
         Write-Host "==============================================" -ForegroundColor Green
         
+        # Get disk space information first to check for low space
+        Write-Host "`n## DISK SPACE ##" -ForegroundColor Magenta
+        $diskSpace = Get-ServerDiskSpace -ComputerName $currentServer
+        
+        # Track if we need emergency cleanup
+        $emergencyCleanupNeeded = $false
+        $criticalDrives = @()
+        
+        if ($diskSpace) {
+            foreach ($disk in $diskSpace) {
+                if ($disk.DeviceID -eq "ERROR") {
+                    Write-Host "Error retrieving disk space: $($disk.Error)" -ForegroundColor Red
+                }
+                else {
+                    $spaceColor = "Green"
+                    $statusMessage = "OK"
+                    
+                    # Check disk space thresholds
+                    if ($disk.PercentFree -lt $diskSpaceCriticalThreshold) {
+                        $spaceColor = "Red"
+                        $statusMessage = "CRITICAL"
+                        $emergencyCleanupNeeded = $true
+                        $criticalDrives += $disk.DeviceID
+                    }
+                    elseif ($disk.PercentFree -lt $diskSpaceWarningThreshold) {
+                        $spaceColor = "Yellow"
+                        $statusMessage = "WARNING"
+                    }
+                    
+                    Write-Host "Drive: $($disk.DeviceID)" -ForegroundColor Yellow
+                    Write-Host "Total Size: $($disk.'Size(GB)') GB"
+                    Write-Host "Free Space: $($disk.'FreeSpace(GB)') GB" -ForegroundColor $spaceColor
+                    Write-Host "Used Space: $($disk.'Used(GB)') GB"
+                    Write-Host "Percent Free: $($disk.PercentFree)%" -ForegroundColor $spaceColor
+                    Write-Host "Status: $statusMessage" -ForegroundColor $spaceColor
+                }
+                Write-Host "-" * 60
+            }
+            
+            # Perform emergency cleanup if needed
+            if ($emergencyCleanupNeeded) {
+                Write-Host "`n## EMERGENCY DISK CLEANUP ##" -ForegroundColor Red
+                Write-Host "Critical disk space detected! Performing emergency cleanup..." -ForegroundColor Red
+                
+                foreach ($drive in $criticalDrives) {
+                    Write-Host "Initiating emergency cleanup for drive $drive..." -ForegroundColor Red
+                    $cleanupResults = Invoke-EmergencyDiskCleanup -ComputerName $currentServer -DriveLetter $drive
+                    
+                    if ($cleanupResults) {
+                        Write-Host "Emergency cleanup results for drive $drive:" -ForegroundColor Yellow
+                        
+                        # Display summary first
+                        $summary = $cleanupResults | Where-Object { $_.ActionType -eq "SUMMARY" }
+                        if ($summary) {
+                            Write-Host "Summary: $($summary.Status)" -ForegroundColor Cyan
+                            Write-Host "Total Space Reclaimed: $($summary.SizeMB) MB" -ForegroundColor Green
+                            Write-Host "Total Files Processed: $($summary.Count)" -ForegroundColor Green
+                        }
+                        
+                        # Display detailed actions
+                        $actions = $cleanupResults | Where-Object { $_.ActionType -ne "SUMMARY" -and $_.ActionType -ne "ERROR" }
+                        foreach ($action in $actions) {
+                            Write-Host "Action: $($action.ActionType)" -ForegroundColor Yellow
+                            Write-Host "  Path: $($action.Path)"
+                            Write-Host "  Size: $($action.SizeMB) MB"
+                            Write-Host "  Count: $($action.Count) files"
+                            Write-Host "  Status: $($action.Status)"
+                            Write-Host "-" * 40
+                        }
+                        
+                        # Display errors
+                        $errors = $cleanupResults | Where-Object { $_.ActionType -eq "ERROR" }
+                        foreach ($error in $errors) {
+                            Write-Host "Error: $($error.Status)" -ForegroundColor Red
+                        }
+                        
+                        # Check disk space again after cleanup
+                        Write-Host "Checking disk space after emergency cleanup..." -ForegroundColor Yellow
+                        $postCleanupDiskSpace = Get-ServerDiskSpace -ComputerName $currentServer
+                        $updatedDrive = $postCleanupDiskSpace | Where-Object { $_.DeviceID -eq $drive }
+                        
+                        if ($updatedDrive -and $updatedDrive.DeviceID -ne "ERROR") {
+                            $newSpaceColor = "Green"
+                            if ($updatedDrive.PercentFree -lt $diskSpaceCriticalThreshold) {
+                                $newSpaceColor = "Red"
+                                $newStatus = "STILL CRITICAL"
+                            }
+                            elseif ($updatedDrive.PercentFree -lt $diskSpaceWarningThreshold) {
+                                $newSpaceColor = "Yellow"
+                                $newStatus = "WARNING"
+                            }
+                            else {
+                                $newStatus = "OK"
+                            }
+                            
+                            Write-Host "Drive $drive after cleanup:" -ForegroundColor Yellow
+                            Write-Host "Free Space: $($updatedDrive.'FreeSpace(GB)') GB" -ForegroundColor $newSpaceColor
+                            Write-Host "Percent Free: $($updatedDrive.PercentFree)%" -ForegroundColor $newSpaceColor
+                            Write-Host "Status: $newStatus" -ForegroundColor $newSpaceColor
+                        }
+                    }
+                    else {
+                        Write-Host "No emergency cleanup results returned for drive $drive" -ForegroundColor Red
+                    }
+                    
+                    Write-Host "-" * 60
+                }
+            }
+        }
+        else {
+            Write-Host "No disk space information available for $currentServer" -ForegroundColor Red
+        }
+        
         # Test SQL Server connection
         Write-Host "`n## CONNECTION STATUS ##" -ForegroundColor Magenta
         $connectionStatus = Test-SQLServerConnection -ComputerName $currentServer
@@ -894,31 +1282,6 @@ foreach ($currentServer in $servers) {
         }
         else {
             Write-Host "No connection information available for $currentServer" -ForegroundColor Red
-        }
-        
-        # Get disk space information
-        Write-Host "`n## DISK SPACE ##" -ForegroundColor Magenta
-        $diskSpace = Get-ServerDiskSpace -ComputerName $currentServer
-        
-        if ($diskSpace) {
-            foreach ($disk in $diskSpace) {
-                if ($disk.DeviceID -eq "ERROR") {
-                    Write-Host "Error retrieving disk space: $($disk.Error)" -ForegroundColor Red
-                }
-                else {
-                    $spaceColor = if ($disk.PercentFree -lt 10) { "Red" } elseif ($disk.PercentFree -lt 20) { "Yellow" } else { "Green" }
-                    
-                    Write-Host "Drive: $($disk.DeviceID)" -ForegroundColor Yellow
-                    Write-Host "Total Size: $($disk.'Size(GB)') GB"
-                    Write-Host "Free Space: $($disk.'FreeSpace(GB)') GB" -ForegroundColor $spaceColor
-                    Write-Host "Used Space: $($disk.'Used(GB)') GB"
-                    Write-Host "Percent Free: $($disk.PercentFree)%" -ForegroundColor $spaceColor
-                }
-                Write-Host "-" * 60
-            }
-        }
-        else {
-            Write-Host "No disk space information available for $currentServer" -ForegroundColor Red
         }
         
         # Check SQL job statuses
@@ -1083,7 +1446,7 @@ foreach ($currentServer in $servers) {
             Write-Host "No backup information available for $currentServer" -ForegroundColor Red
         }
         
-        # Clean up old backups
+        # Clean up old backups (standard cleanup)
         Write-Host "`n## BACKUP CLEANUP ##" -ForegroundColor Magenta
         $cleanupResults = Remove-OldBackups -ComputerName $currentServer -RetentionDays $backupRetentionDays
         
