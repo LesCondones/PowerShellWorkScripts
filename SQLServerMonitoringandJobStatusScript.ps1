@@ -15,14 +15,17 @@ $diskSpaceWarningThreshold = 20   # Warning threshold - alert only
 function Get-SQLServerJobStatus {
     param(
         [string]$ComputerName,
+        [switch]$ForceDefaultInstance = $true,
         [System.Management.Automation.PSCredential]$Credential = $null
     )
-    
+   
     Write-Host "Getting SQL Server job statuses from $ComputerName..."
-    
+   
     try {
         # Use Invoke-Command to run the SQL query remotely
         $jobStatuses = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+            param($ForceDefaultInstance)
+            
             # Load SQL Server module if available
             if (Get-Module -ListAvailable -Name SQLPS) {
                 Import-Module SQLPS -DisableNameChecking
@@ -33,37 +36,43 @@ function Get-SQLServerJobStatus {
             else {
                 throw "SQL Server PowerShell modules not found on $using:ComputerName"
             }
-            
-            # Get all SQL instances on the server
-            $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue | 
-                Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider | 
-                Get-Member -MemberType NoteProperty | 
-                Select-Object -ExpandProperty Name
-            
-            if (-not $instances) {
-                $instances = @("MSSQLSERVER") # Default instance if none found
+           
+            # Get all SQL instances on the server or force default instance
+            if ($ForceDefaultInstance) {
+                $instances = @("MSSQLSERVER")  # Always use default instance
             }
-            
+            else {
+                # Original code to detect instances
+                $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue |
+                    Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider |
+                    Get-Member -MemberType NoteProperty |
+                    Select-Object -ExpandProperty Name
+               
+                if (-not $instances) {
+                    $instances = @("MSSQLSERVER") # Default instance if none found
+                }
+            }
+           
             $allJobStatuses = @()
-            
+           
             foreach ($instance in $instances) {
                 $instanceName = if ($instance -eq "MSSQLSERVER") { $env:COMPUTERNAME } else { "$($env:COMPUTERNAME)\$instance" }
-                
+               
                 try {
                     # Test connection first
                     $connectionString = "Server=$instanceName;Integrated Security=True;Connection Timeout=5"
                     $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-                    
+                   
                     try {
                         $connection.Open()
                         $connection.Close()
-                        
+                       
                         # Get job information using SMO
                         $server = New-Object Microsoft.SqlServer.Management.Smo.Server($instanceName)
                         $server.ConnectionContext.ConnectTimeout = 10
                         $server.ConnectionContext.StatementTimeout = 30
                         $jobs = $server.JobServer.Jobs
-                        
+                       
                         foreach ($job in $jobs) {
                             $lastRunOutcome = $job.LastRunOutcome
                             $lastRunStatus = switch ($lastRunOutcome) {
@@ -73,7 +82,7 @@ function Get-SQLServerJobStatus {
                                 "Unknown" { "Unknown" }
                                 default { $lastRunOutcome }
                             }
-                            
+                           
                             # Get job failure details if job failed
                             $failureMessage = ""
                             if ($lastRunStatus -eq "Failed") {
@@ -93,7 +102,7 @@ function Get-SQLServerJobStatus {
                                             }
                                         }
                                     }
-                                    
+                                   
                                     if ($jobHistory) {
                                         $failureMessage = ($jobHistory | ForEach-Object { "Step '$($_.StepName)': $($_.Message)" }) -join " | "
                                     }
@@ -102,7 +111,7 @@ function Get-SQLServerJobStatus {
                                     $failureMessage = "Could not retrieve detailed failure info: $($_.Exception.Message)"
                                 }
                             }
-                            
+                           
                             $allJobStatuses += [PSCustomObject]@{
                                 ServerName = $env:COMPUTERNAME
                                 InstanceName = $instanceName
@@ -121,7 +130,7 @@ function Get-SQLServerJobStatus {
                     }
                     catch {
                         Write-Warning "Failed to connect to instance $instanceName on $($env:COMPUTERNAME): $($_.Exception.Message)"
-                        
+                       
                         # Add status entry for failed connection
                         $allJobStatuses += [PSCustomObject]@{
                             ServerName = $env:COMPUTERNAME
@@ -147,7 +156,7 @@ function Get-SQLServerJobStatus {
                 }
                 catch {
                     Write-Warning "Failed to get job status for instance $instanceName on $($env:COMPUTERNAME): $($_.Exception.Message)"
-                    
+                   
                     # Add status entry for error
                     $allJobStatuses += [PSCustomObject]@{
                         ServerName = $env:COMPUTERNAME
@@ -165,10 +174,10 @@ function Get-SQLServerJobStatus {
                     }
                 }
             }
-            
+           
             return $allJobStatuses
-        } -ErrorAction Stop
-        
+        } -ArgumentList $ForceDefaultInstance -ErrorAction Stop
+       
         return $jobStatuses
     }
     catch {
@@ -196,14 +205,17 @@ function Get-SQLServerJobStatus {
 function Get-SQLServerBackupInfo {
     param(
         [string]$ComputerName,
+        [switch]$ForceDefaultInstance = $true,
         [System.Management.Automation.PSCredential]$Credential = $null
     )
-    
+   
     Write-Host "Getting SQL Server backup information from $ComputerName..."
-    
+   
     try {
         # Use Invoke-Command to run the SQL query remotely
         $backupInfo = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+            param($ForceDefaultInstance)
+            
             # Load SQL Server module if available
             if (Get-Module -ListAvailable -Name SQLPS) {
                 Import-Module SQLPS -DisableNameChecking
@@ -214,40 +226,46 @@ function Get-SQLServerBackupInfo {
             else {
                 throw "SQL Server PowerShell modules not found on $using:ComputerName"
             }
-            
-            # Get all SQL instances on the server
-            $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue | 
-                Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider | 
-                Get-Member -MemberType NoteProperty | 
-                Select-Object -ExpandProperty Name
-            
-            if (-not $instances) {
-                $instances = @("MSSQLSERVER") # Default instance if none found
+           
+            # Get all SQL instances on the server or force default instance
+            if ($ForceDefaultInstance) {
+                $instances = @("MSSQLSERVER")  # Always use default instance
             }
-            
+            else {
+                # Original code to detect instances
+                $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue |
+                    Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider |
+                    Get-Member -MemberType NoteProperty |
+                    Select-Object -ExpandProperty Name
+               
+                if (-not $instances) {
+                    $instances = @("MSSQLSERVER") # Default instance if none found
+                }
+            }
+           
             $allBackupInfo = @()
-            
+           
             foreach ($instance in $instances) {
                 $instanceName = if ($instance -eq "MSSQLSERVER") { $env:COMPUTERNAME } else { "$($env:COMPUTERNAME)\$instance" }
-                
+               
                 try {
                     # Test connection first
                     $connectionString = "Server=$instanceName;Integrated Security=True;Connection Timeout=5"
                     $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-                    
+                   
                     try {
                         $connection.Open()
                         $connection.Close()
-                        
+                       
                         # Get backup information using SMO
                         $server = New-Object Microsoft.SqlServer.Management.Smo.Server($instanceName)
                         $server.ConnectionContext.ConnectTimeout = 10
                         $server.ConnectionContext.StatementTimeout = 30
-                        
+                       
                         # Get backup directory configurations
                         try {
                             $backupDirectory = $server.BackupDirectory
-                            
+                           
                             # Add backup directory info
                             $allBackupInfo += [PSCustomObject]@{
                                 ServerName = $env:COMPUTERNAME
@@ -265,7 +283,7 @@ function Get-SQLServerBackupInfo {
                         }
                         catch {
                             Write-Warning "Failed to get backup directory for instance $instanceName on $($env:COMPUTERNAME): $($_.Exception.Message)"
-                            
+                           
                             $allBackupInfo += [PSCustomObject]@{
                                 ServerName = $env:COMPUTERNAME
                                 InstanceName = $instanceName
@@ -280,25 +298,25 @@ function Get-SQLServerBackupInfo {
                                 IsPasswordProtected = $false
                             }
                         }
-                        
+                       
                         # Query for recent backups with error handling
                         try {
                             $query = @"
-                            SELECT 
-                                bs.database_name, 
-                                bs.backup_start_date, 
+                            SELECT
+                                bs.database_name,
+                                bs.backup_start_date,
                                 bs.backup_finish_date,
-                                bs.backup_size, 
+                                bs.backup_size,
                                 bmf.physical_device_name,
-                                CASE bs.type 
-                                    WHEN 'D' THEN 'Full' 
-                                    WHEN 'I' THEN 'Differential' 
-                                    WHEN 'L' THEN 'Log' 
-                                    ELSE 'Unknown' 
+                                CASE bs.type
+                                    WHEN 'D' THEN 'Full'
+                                    WHEN 'I' THEN 'Differential'
+                                    WHEN 'L' THEN 'Log'
+                                    ELSE 'Unknown'
                                 END AS backup_type,
-                                CASE bs.is_copy_only 
-                                    WHEN 1 THEN 'Copy Only' 
-                                    ELSE 'Normal' 
+                                CASE bs.is_copy_only
+                                    WHEN 1 THEN 'Copy Only'
+                                    ELSE 'Normal'
                                 END AS is_copy_only,
                                 bs.is_damaged,
                                 bs.is_password_protected
@@ -307,9 +325,9 @@ function Get-SQLServerBackupInfo {
                             WHERE bs.backup_start_date >= DATEADD(day, -30, GETDATE())
                             ORDER BY bs.backup_start_date DESC
 "@
-                            
+                           
                             $backups = $server.ConnectionContext.ExecuteWithResults($query).Tables[0]
-                            
+                           
                             foreach ($backup in $backups) {
                                 $allBackupInfo += [PSCustomObject]@{
                                     ServerName = $env:COMPUTERNAME
@@ -328,7 +346,7 @@ function Get-SQLServerBackupInfo {
                         }
                         catch {
                             Write-Warning "Failed to execute backup query for instance $instanceName on $($env:COMPUTERNAME): $($_.Exception.Message)"
-                            
+                           
                             $allBackupInfo += [PSCustomObject]@{
                                 ServerName = $env:COMPUTERNAME
                                 InstanceName = $instanceName
@@ -343,11 +361,11 @@ function Get-SQLServerBackupInfo {
                                 IsPasswordProtected = $false
                             }
                         }
-                        
+                       
                         # Get databases without recent backups (also with error handling)
                         try {
                             $query2 = @"
-                            SELECT 
+                            SELECT
                                 d.name AS database_name,
                                 COALESCE(MAX(bs.backup_finish_date), '1900-01-01') AS last_backup_date,
                                 DATEDIFF(day, COALESCE(MAX(bs.backup_finish_date), '1900-01-01'), GETDATE()) AS days_since_last_backup
@@ -358,9 +376,9 @@ function Get-SQLServerBackupInfo {
                             HAVING DATEDIFF(day, COALESCE(MAX(bs.backup_finish_date), '1900-01-01'), GETDATE()) > 1
                             ORDER BY days_since_last_backup DESC
 "@
-                            
+                           
                             $missingBackups = $server.ConnectionContext.ExecuteWithResults($query2).Tables[0]
-                            
+                           
                             # Add missing backup info
                             foreach ($miss in $missingBackups) {
                                 $allBackupInfo += [PSCustomObject]@{
@@ -385,7 +403,7 @@ function Get-SQLServerBackupInfo {
                     }
                     catch {
                         Write-Warning "Failed to connect to instance $instanceName on $($env:COMPUTERNAME): $($_.Exception.Message)"
-                        
+                       
                         $allBackupInfo += [PSCustomObject]@{
                             ServerName = $env:COMPUTERNAME
                             InstanceName = $instanceName
@@ -409,7 +427,7 @@ function Get-SQLServerBackupInfo {
                 }
                 catch {
                     Write-Warning "Error processing instance $instanceName on $($env:COMPUTERNAME): $($_.Exception.Message)"
-                    
+                   
                     $allBackupInfo += [PSCustomObject]@{
                         ServerName = $env:COMPUTERNAME
                         InstanceName = $instanceName
@@ -425,10 +443,10 @@ function Get-SQLServerBackupInfo {
                     }
                 }
             }
-            
+           
             return $allBackupInfo
-        } -ErrorAction Stop
-        
+        } -ArgumentList $ForceDefaultInstance -ErrorAction Stop
+       
         return $backupInfo
     }
     catch {
@@ -457,15 +475,15 @@ function Get-ServerDiskSpace {
         [string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential = $null
     )
-    
+   
     Write-Host "Getting disk space information from $ComputerName..."
-    
+   
     try {
         # Use Invoke-Command to get disk space information remotely
         $diskSpace = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
             try {
-                Get-WmiObject -Class Win32_LogicalDisk -Filter "DriveType = 3" | 
-                Select-Object -Property DeviceID, 
+                Get-WmiObject -Class Win32_LogicalDisk -Filter "DriveType = 3" |
+                Select-Object -Property DeviceID,
                     @{Name="Size(GB)"; Expression={[math]::Round($_.Size / 1GB, 2)}},
                     @{Name="FreeSpace(GB)"; Expression={[math]::Round($_.FreeSpace / 1GB, 2)}},
                     @{Name="Used(GB)"; Expression={[math]::Round(($_.Size - $_.FreeSpace) / 1GB, 2)}},
@@ -485,7 +503,7 @@ function Get-ServerDiskSpace {
                 )
             }
         } -ErrorAction Stop
-        
+       
         return $diskSpace
     }
     catch {
@@ -507,14 +525,17 @@ function Get-ServerDiskSpace {
 function Test-SQLServerConnection {
     param(
         [string]$ComputerName,
+        [switch]$ForceDefaultInstance = $true,
         [System.Management.Automation.PSCredential]$Credential = $null
     )
-    
+   
     Write-Host "Testing SQL Server connections on $ComputerName..."
-    
+   
     try {
         # Use Invoke-Command to run the SQL connection test remotely
         $connectionStatus = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+            param($ForceDefaultInstance)
+            
             # Load SQL Server module if available
             if (Get-Module -ListAvailable -Name SQLPS) {
                 Import-Module SQLPS -DisableNameChecking
@@ -525,41 +546,47 @@ function Test-SQLServerConnection {
             else {
                 throw "SQL Server PowerShell modules not found on $using:ComputerName"
             }
-            
-            # Get all SQL instances on the server
-            $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue | 
-                Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider | 
-                Get-Member -MemberType NoteProperty | 
-                Select-Object -ExpandProperty Name
-            
-            if (-not $instances) {
-                $instances = @("MSSQLSERVER") # Default instance if none found
+           
+            # Get all SQL instances on the server or force default instance
+            if ($ForceDefaultInstance) {
+                $instances = @("MSSQLSERVER")  # Always use default instance
             }
-            
+            else {
+                # Original code to detect instances
+                $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue |
+                    Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider |
+                    Get-Member -MemberType NoteProperty |
+                    Select-Object -ExpandProperty Name
+               
+                if (-not $instances) {
+                    $instances = @("MSSQLSERVER") # Default instance if none found
+                }
+            }
+           
             $connectionResults = @()
-            
+           
             foreach ($instance in $instances) {
                 $instanceName = if ($instance -eq "MSSQLSERVER") { $env:COMPUTERNAME } else { "$($env:COMPUTERNAME)\$instance" }
-                
+               
                 try {
                     # Use ADO.NET connection for initial test
                     $connectionString = "Server=$instanceName;Integrated Security=True;Connection Timeout=5"
                     $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-                    
+                   
                     try {
                         $connection.Open()
                         $isConnected = $true
                         $errorMessage = ""
                         $connection.Close()
-                        
+                       
                         # Now use SMO for more detailed information
                         $server = New-Object Microsoft.SqlServer.Management.Smo.Server($instanceName)
                         $server.ConnectionContext.ConnectTimeout = 5
-                        
+                       
                         # Check connection by getting server version
                         $version = $server.Version
                         $edition = $server.Edition
-                        
+                       
                         # Get additional connection information
                         try {
                             $activeConnections = $server.ConnectionContext.ExecuteScalar("SELECT COUNT(*) FROM sys.dm_exec_connections")
@@ -567,7 +594,7 @@ function Test-SQLServerConnection {
                         catch {
                             $activeConnections = "Unknown"
                         }
-                        
+                       
                         # Check SQL Server service status
                         $serviceName = if ($instance -eq "MSSQLSERVER") { "MSSQLSERVER" } else { "MSSQL`$$instance" }
                         $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -596,7 +623,7 @@ function Test-SQLServerConnection {
                     $activeConnections = 0
                     $serviceStatus = "Unknown"
                 }
-                
+               
                 $connectionResults += [PSCustomObject]@{
                     ServerName = $env:COMPUTERNAME
                     InstanceName = $instanceName
@@ -608,10 +635,10 @@ function Test-SQLServerConnection {
                     ErrorMessage = $errorMessage
                 }
             }
-            
+           
             return $connectionResults
-        } -ErrorAction Stop
-        
+        } -ArgumentList $ForceDefaultInstance -ErrorAction Stop
+       
         return $connectionStatus
     }
     catch {
@@ -636,14 +663,17 @@ function Remove-OldBackups {
     param(
         [string]$ComputerName,
         [int]$RetentionDays = 30,
+        [switch]$ForceDefaultInstance = $true,
         [System.Management.Automation.PSCredential]$Credential = $null
     )
-    
+   
     Write-Host "Cleaning up old backup files on $ComputerName (older than $RetentionDays days)..."
-    
+   
     try {
         # Use Invoke-Command to clean up old backups remotely
         $cleanupResults = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+            param($RetentionDays, $ForceDefaultInstance)
+            
             # Load SQL Server module if available
             if (Get-Module -ListAvailable -Name SQLPS) {
                 Import-Module SQLPS -DisableNameChecking
@@ -654,49 +684,55 @@ function Remove-OldBackups {
             else {
                 throw "SQL Server PowerShell modules not found on $using:ComputerName"
             }
-            
-            # Get all SQL instances on the server
-            $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue | 
-                Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider | 
-                Get-Member -MemberType NoteProperty | 
-                Select-Object -ExpandProperty Name
-            
-            if (-not $instances) {
-                $instances = @("MSSQLSERVER") # Default instance if none found
+           
+            # Get all SQL instances on the server or force default instance
+            if ($ForceDefaultInstance) {
+                $instances = @("MSSQLSERVER")  # Always use default instance
             }
-            
+            else {
+                # Original code to detect instances
+                $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue |
+                    Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider |
+                    Get-Member -MemberType NoteProperty |
+                    Select-Object -ExpandProperty Name
+               
+                if (-not $instances) {
+                    $instances = @("MSSQLSERVER") # Default instance if none found
+                }
+            }
+           
             $results = @()
-            $cutoffDate = (Get-Date).AddDays(-$using:RetentionDays)
-            
+            $cutoffDate = (Get-Date).AddDays(-$RetentionDays)
+           
             foreach ($instance in $instances) {
                 $instanceName = if ($instance -eq "MSSQLSERVER") { $env:COMPUTERNAME } else { "$($env:COMPUTERNAME)\$instance" }
-                
+               
                 try {
                     # Test connection first
                     $connectionString = "Server=$instanceName;Integrated Security=True;Connection Timeout=5"
                     $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
-                    
+                   
                     try {
                         $connection.Open()
                         $connection.Close()
-                        
+                       
                         # Get server object
                         $server = New-Object Microsoft.SqlServer.Management.Smo.Server($instanceName)
                         $server.ConnectionContext.ConnectTimeout = 10
-                        
+                       
                         # Get backup directory
                         try {
                             $backupDir = $server.BackupDirectory
-                            
+                           
                             if (Test-Path $backupDir) {
                                 # Find backup files older than retention period
                                 $oldFiles = Get-ChildItem -Path $backupDir -Recurse -File -ErrorAction SilentlyContinue |
                                     Where-Object { $_.Extension -match '\.(bak|trn)$' -and $_.LastWriteTime -lt $cutoffDate }
-                                
+                               
                                 if ($oldFiles) {
                                     $totalSize = [math]::Round(($oldFiles | Measure-Object -Property Length -Sum).Sum / 1GB, 2)
                                     $fileCount = ($oldFiles | Measure-Object).Count
-                                    
+                                   
                                     # Delete old files
                                     foreach ($file in $oldFiles) {
                                         try {
@@ -721,7 +757,7 @@ function Remove-OldBackups {
                                             }
                                         }
                                     }
-                                    
+                                   
                                     $results += [PSCustomObject]@{
                                         ServerName = $env:COMPUTERNAME
                                         InstanceName = $instanceName
@@ -738,7 +774,7 @@ function Remove-OldBackups {
                                         FilePath = $backupDir
                                         FileSize = 0
                                         LastModified = Get-Date
-                                        Status = "No backup files older than $using:RetentionDays days found"
+                                        Status = "No backup files older than $RetentionDays days found"
                                     }
                                 }
                             }
@@ -792,10 +828,10 @@ function Remove-OldBackups {
                     }
                 }
             }
-            
+           
             return $results
-        } -ErrorAction Stop
-        
+        } -ArgumentList $RetentionDays, $ForceDefaultInstance -ErrorAction Stop
+       
         return $cleanupResults
     }
     catch {
@@ -818,16 +854,17 @@ function Invoke-EmergencyDiskCleanup {
     param(
         [string]$ComputerName,
         [string]$DriveLetter,
+        [switch]$ForceDefaultInstance = $true,
         [System.Management.Automation.PSCredential]$Credential = $null
     )
-    
+   
     Write-Host "EMERGENCY: Performing disk cleanup on $ComputerName drive $DriveLetter due to critically low space..." -ForegroundColor Red
-    
+   
     try {
         # Use Invoke-Command to perform emergency cleanup remotely
         $cleanupResults = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-            param($DriveLetter)
-            
+            param($DriveLetter, $ForceDefaultInstance)
+           
             # Load SQL Server module if available
             if (Get-Module -ListAvailable -Name SQLPS) {
                 Import-Module SQLPS -DisableNameChecking
@@ -835,11 +872,11 @@ function Invoke-EmergencyDiskCleanup {
             elseif (Get-Module -ListAvailable -Name SqlServer) {
                 Import-Module SqlServer
             }
-            
+           
             $results = @()
             $totalSpaceReclaimed = 0
             $totalFilesDeleted = 0
-            
+           
             # Clean up temp files in Windows temp folder on the specific drive
             try {
                 $drivePath = "$DriveLetter\"
@@ -847,17 +884,17 @@ function Invoke-EmergencyDiskCleanup {
                     "$env:SystemRoot\Temp",
                     "$env:TEMP"
                 ) | Where-Object { $_.StartsWith($drivePath) }
-                
+               
                 foreach ($tempFolder in $tempFolders) {
                     if (Test-Path $tempFolder) {
                         # Get temp files
                         $tempFiles = Get-ChildItem -Path $tempFolder -Recurse -File -ErrorAction SilentlyContinue
                         $tempFilesSize = 0
-                        
+                       
                         if ($tempFiles) {
                             $tempFilesSize = [math]::Round(($tempFiles | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
                             $tempFilesCount = ($tempFiles | Measure-Object).Count
-                            
+                           
                             # Remove temp files
                             foreach ($file in $tempFiles) {
                                 try {
@@ -869,7 +906,7 @@ function Invoke-EmergencyDiskCleanup {
                                     # Ignore errors for individual files
                                 }
                             }
-                            
+                           
                             $results += [PSCustomObject]@{
                                 ActionType = "TempFiles"
                                 Path = $tempFolder
@@ -877,7 +914,7 @@ function Invoke-EmergencyDiskCleanup {
                                 Count = $tempFilesCount
                                 Status = "Cleaned"
                             }
-                            
+                           
                             $totalSpaceReclaimed += $tempFilesSize
                             $totalFilesDeleted += $tempFilesCount
                         }
@@ -893,39 +930,45 @@ function Invoke-EmergencyDiskCleanup {
                     Status = "Failed: $($_.Exception.Message)"
                 }
             }
-            
+           
             # Clean up SQL Server backup files - more aggressive cleanup for emergency
             try {
-                # Get all SQL instances on the server
-                $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue | 
-                    Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider | 
-                    Get-Member -MemberType NoteProperty | 
-                    Select-Object -ExpandProperty Name
-                
-                if (-not $instances) {
-                    $instances = @("MSSQLSERVER") # Default instance if none found
+                # Get all SQL instances on the server or force default instance
+                if ($ForceDefaultInstance) {
+                    $instances = @("MSSQLSERVER")  # Always use default instance
                 }
-                
+                else {
+                    # Original code to detect instances
+                    $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL" -ErrorAction SilentlyContinue |
+                        Select-Object -Property * -ExcludeProperty PSPath, PSParentPath, PSChildName, PSProvider |
+                        Get-Member -MemberType NoteProperty |
+                        Select-Object -ExpandProperty Name
+                   
+                    if (-not $instances) {
+                        $instances = @("MSSQLSERVER") # Default instance if none found
+                    }
+                }
+               
                 foreach ($instance in $instances) {
                     $instanceName = if ($instance -eq "MSSQLSERVER") { $env:COMPUTERNAME } else { "$($env:COMPUTERNAME)\$instance" }
-                    
+                   
                     try {
                         # Get server object
                         $server = New-Object Microsoft.SqlServer.Management.Smo.Server($instanceName)
-                        
+                       
                         # Get backup directory and check if it's on the specified drive
                         $backupDir = $server.BackupDirectory
-                        
+                       
                         if ($backupDir -and $backupDir.StartsWith($DriveLetter)) {
                             if (Test-Path $backupDir) {
                                 # Get all log backups (.trn) files
                                 $logBackups = Get-ChildItem -Path $backupDir -Recurse -File -ErrorAction SilentlyContinue |
                                     Where-Object { $_.Extension -eq '.trn' }
-                                
+                               
                                 if ($logBackups) {
                                     $logBackupsSize = [math]::Round(($logBackups | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
                                     $logBackupsCount = ($logBackups | Measure-Object).Count
-                                    
+                                   
                                     # Delete log backups
                                     foreach ($file in $logBackups) {
                                         try {
@@ -935,7 +978,7 @@ function Invoke-EmergencyDiskCleanup {
                                             # Ignore errors for individual files
                                         }
                                     }
-                                    
+                                   
                                     $results += [PSCustomObject]@{
                                         ActionType = "SQLLogBackups"
                                         Path = $backupDir
@@ -943,27 +986,27 @@ function Invoke-EmergencyDiskCleanup {
                                         Count = $logBackupsCount
                                         Status = "Cleaned"
                                     }
-                                    
+                                   
                                     $totalSpaceReclaimed += $logBackupsSize
                                     $totalFilesDeleted += $logBackupsCount
                                 }
-                                
+                               
                                 # Get old full backups - older than 7 days in emergency
                                 $cutoffDate = (Get-Date).AddDays(-7)
                                 $oldFullBackups = Get-ChildItem -Path $backupDir -Recurse -File -ErrorAction SilentlyContinue |
                                     Where-Object { $_.Extension -eq '.bak' -and $_.LastWriteTime -lt $cutoffDate }
-                                
+                               
                                 if ($oldFullBackups) {
                                     $oldFullBackupsSize = [math]::Round(($oldFullBackups | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
                                     $oldFullBackupsCount = ($oldFullBackups | Measure-Object).Count
-                                    
+                                   
                                     # Delete old full backups except most recent ones
                                     $databaseGroups = $oldFullBackups | Group-Object { $_.Name -replace '_.+$', '' }
-                                    
+                                   
                                     foreach ($group in $databaseGroups) {
                                         # Keep the most recent backup for each database
                                         $sortedFiles = $group.Group | Sort-Object LastWriteTime -Descending
-                                        
+                                       
                                         # Skip the most recent file, delete the rest
                                         foreach ($file in $sortedFiles | Select-Object -Skip 1) {
                                             try {
@@ -974,7 +1017,7 @@ function Invoke-EmergencyDiskCleanup {
                                             }
                                         }
                                     }
-                                    
+                                   
                                     $results += [PSCustomObject]@{
                                         ActionType = "SQLOldFullBackups"
                                         Path = $backupDir
@@ -982,7 +1025,7 @@ function Invoke-EmergencyDiskCleanup {
                                         Count = $oldFullBackupsCount
                                         Status = "Cleaned (keeping most recent per database)"
                                     }
-                                    
+                                   
                                     $totalSpaceReclaimed += $oldFullBackupsSize
                                     $totalFilesDeleted += $oldFullBackupsCount
                                 }
@@ -1009,18 +1052,18 @@ function Invoke-EmergencyDiskCleanup {
                     Status = "Failed: $($_.Exception.Message)"
                 }
             }
-            
+           
             # Identify and clean large log files on the drive
             try {
                 $largeLogFiles = Get-ChildItem -Path "$DriveLetter\" -Include *.log, *.ldf -Recurse -File -ErrorAction SilentlyContinue |
                     Where-Object { $_.Length -gt 100MB } |
                     Sort-Object Length -Descending |
                     Select-Object -First 10  # Limit to top 10 largest files to avoid excessive deletion
-                
+               
                 if ($largeLogFiles) {
                     $largeLogFilesSize = [math]::Round(($largeLogFiles | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
                     $largeLogFilesCount = ($largeLogFiles | Measure-Object).Count
-                    
+                   
                     # Only clear SQL Server error logs - not database log files
                     foreach ($file in $largeLogFiles) {
                         if ($file.Name -match 'ERRORLOG' -or $file.Name -match 'SQL.*\.log') {
@@ -1033,7 +1076,7 @@ function Invoke-EmergencyDiskCleanup {
                             }
                         }
                     }
-                    
+                   
                     $results += [PSCustomObject]@{
                         ActionType = "LargeLogFiles"
                         Path = "$DriveLetter\"
@@ -1041,7 +1084,7 @@ function Invoke-EmergencyDiskCleanup {
                         Count = $largeLogFilesCount
                         Status = "SQL error logs cleared"
                     }
-                    
+                   
                     $totalSpaceReclaimed += $largeLogFilesSize
                     $totalFilesDeleted += $largeLogFilesCount
                 }
@@ -1055,7 +1098,7 @@ function Invoke-EmergencyDiskCleanup {
                     Status = "Failed: $($_.Exception.Message)"
                 }
             }
-            
+           
             # Add summary
             $results += [PSCustomObject]@{
                 ActionType = "SUMMARY"
@@ -1064,10 +1107,10 @@ function Invoke-EmergencyDiskCleanup {
                 Count = $totalFilesDeleted
                 Status = "Emergency cleanup completed. Total space reclaimed: $totalSpaceReclaimed MB, Files processed: $totalFilesDeleted"
             }
-            
+           
             return $results
-        } -ArgumentList $DriveLetter -ErrorAction Stop
-        
+        } -ArgumentList $DriveLetter, $ForceDefaultInstance -ErrorAction Stop
+       
         return $cleanupResults
     }
     catch {
@@ -1109,12 +1152,12 @@ if (-not (Test-Path $serverListPath)) {
 else {
     # Read server list from file
     try {
-        $servers = Get-Content -Path $serverListPath -ErrorAction Stop | 
+        $servers = Get-Content -Path $serverListPath -ErrorAction Stop |
             Where-Object { $_ -match '\S' } | # Filter out empty lines
             ForEach-Object { $_.Trim() } # Trim whitespace
-        
+       
         $serverCount = ($servers | Measure-Object).Count
-        
+       
         if ($serverCount -eq 0) {
             Write-Host "Error: No servers found in $serverListPath" -ForegroundColor Red
             exit
@@ -1136,24 +1179,24 @@ foreach ($currentServer in $servers) {
     # Create log file for this server
     $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
     $logFilePath = "$logFolderPath\$currentServer-SQLMonitor-$timestamp.log"
-    
+   
     try {
         # Start logging
         Start-Transcript -Path $logFilePath -Append -ErrorAction SilentlyContinue
-        
+       
         Write-Host "==============================================" -ForegroundColor Green
         Write-Host "SQL Server Monitoring for: $currentServer" -ForegroundColor Green
         Write-Host "Started at: $(Get-Date)" -ForegroundColor Green
         Write-Host "==============================================" -ForegroundColor Green
-        
+       
         # Get disk space information first to check for low space
         Write-Host "`n## DISK SPACE ##" -ForegroundColor Magenta
         $diskSpace = Get-ServerDiskSpace -ComputerName $currentServer
-        
+       
         # Track if we need emergency cleanup
         $emergencyCleanupNeeded = $false
         $criticalDrives = @()
-        
+       
         if ($diskSpace) {
             foreach ($disk in $diskSpace) {
                 if ($disk.DeviceID -eq "ERROR") {
@@ -1162,7 +1205,7 @@ foreach ($currentServer in $servers) {
                 else {
                     $spaceColor = "Green"
                     $statusMessage = "OK"
-                    
+                   
                     # Check disk space thresholds
                     if ($disk.PercentFree -lt $diskSpaceCriticalThreshold) {
                         $spaceColor = "Red"
@@ -1174,7 +1217,7 @@ foreach ($currentServer in $servers) {
                         $spaceColor = "Yellow"
                         $statusMessage = "WARNING"
                     }
-                    
+                   
                     Write-Host "Drive: $($disk.DeviceID)" -ForegroundColor Yellow
                     Write-Host "Total Size: $($disk.'Size(GB)') GB"
                     Write-Host "Free Space: $($disk.'FreeSpace(GB)') GB" -ForegroundColor $spaceColor
@@ -1184,19 +1227,19 @@ foreach ($currentServer in $servers) {
                 }
                 Write-Host "-" * 60
             }
-            
+           
             # Perform emergency cleanup if needed
             if ($emergencyCleanupNeeded) {
                 Write-Host "`n## EMERGENCY DISK CLEANUP ##" -ForegroundColor Red
                 Write-Host "Critical disk space detected! Performing emergency cleanup..." -ForegroundColor Red
-                
+               
                 foreach ($drive in $criticalDrives) {
                     Write-Host "Initiating emergency cleanup for drive $drive..." -ForegroundColor Red
                     $cleanupResults = Invoke-EmergencyDiskCleanup -ComputerName $currentServer -DriveLetter $drive
-                    
+                   
                     if ($cleanupResults) {
                         Write-Host "Emergency cleanup results for drive $drive:" -ForegroundColor Yellow
-                        
+                       
                         # Display summary first
                         $summary = $cleanupResults | Where-Object { $_.ActionType -eq "SUMMARY" }
                         if ($summary) {
@@ -1204,7 +1247,7 @@ foreach ($currentServer in $servers) {
                             Write-Host "Total Space Reclaimed: $($summary.SizeMB) MB" -ForegroundColor Green
                             Write-Host "Total Files Processed: $($summary.Count)" -ForegroundColor Green
                         }
-                        
+                       
                         # Display detailed actions
                         $actions = $cleanupResults | Where-Object { $_.ActionType -ne "SUMMARY" -and $_.ActionType -ne "ERROR" }
                         foreach ($action in $actions) {
@@ -1215,18 +1258,18 @@ foreach ($currentServer in $servers) {
                             Write-Host "  Status: $($action.Status)"
                             Write-Host "-" * 40
                         }
-                        
+                       
                         # Display errors
                         $errors = $cleanupResults | Where-Object { $_.ActionType -eq "ERROR" }
                         foreach ($error in $errors) {
                             Write-Host "Error: $($error.Status)" -ForegroundColor Red
                         }
-                        
+                       
                         # Check disk space again after cleanup
                         Write-Host "Checking disk space after emergency cleanup..." -ForegroundColor Yellow
                         $postCleanupDiskSpace = Get-ServerDiskSpace -ComputerName $currentServer
                         $updatedDrive = $postCleanupDiskSpace | Where-Object { $_.DeviceID -eq $drive }
-                        
+                       
                         if ($updatedDrive -and $updatedDrive.DeviceID -ne "ERROR") {
                             $newSpaceColor = "Green"
                             if ($updatedDrive.PercentFree -lt $diskSpaceCriticalThreshold) {
@@ -1240,7 +1283,7 @@ foreach ($currentServer in $servers) {
                             else {
                                 $newStatus = "OK"
                             }
-                            
+                           
                             Write-Host "Drive $drive after cleanup:" -ForegroundColor Yellow
                             Write-Host "Free Space: $($updatedDrive.'FreeSpace(GB)') GB" -ForegroundColor $newSpaceColor
                             Write-Host "Percent Free: $($updatedDrive.PercentFree)%" -ForegroundColor $newSpaceColor
@@ -1250,7 +1293,7 @@ foreach ($currentServer in $servers) {
                     else {
                         Write-Host "No emergency cleanup results returned for drive $drive" -ForegroundColor Red
                     }
-                    
+                   
                     Write-Host "-" * 60
                 }
             }
@@ -1258,11 +1301,11 @@ foreach ($currentServer in $servers) {
         else {
             Write-Host "No disk space information available for $currentServer" -ForegroundColor Red
         }
-        
+       
         # Test SQL Server connection
         Write-Host "`n## CONNECTION STATUS ##" -ForegroundColor Magenta
         $connectionStatus = Test-SQLServerConnection -ComputerName $currentServer
-        
+       
         if ($connectionStatus) {
             foreach ($conn in $connectionStatus) {
                 $statusColor = if ($conn.IsConnected) { "Green" } else { "Red" }
@@ -1272,22 +1315,22 @@ foreach ($currentServer in $servers) {
                 Write-Host "SQL Edition: $($conn.Edition)"
                 Write-Host "Service Status: $($conn.ServiceStatus)"
                 Write-Host "Active Connections: $($conn.ActiveConnections)"
-                
+               
                 if (-not $conn.IsConnected) {
                     Write-Host "Error: $($conn.ErrorMessage)" -ForegroundColor Red
                 }
-                
+               
                 Write-Host "-" * 60
             }
         }
         else {
             Write-Host "No connection information available for $currentServer" -ForegroundColor Red
         }
-        
+       
         # Check SQL job statuses
         Write-Host "`n## SQL JOB STATUS ##" -ForegroundColor Magenta
         $jobStatuses = Get-SQLServerJobStatus -ComputerName $currentServer
-        
+       
         if ($jobStatuses) {
             # Check for connection errors
             $connectionErrors = $jobStatuses | Where-Object { $_.JobName -eq "CONNECTION_ERROR" }
@@ -1299,18 +1342,18 @@ foreach ($currentServer in $servers) {
                     Write-Host "-" * 60
                 }
             }
-            
+           
             # Display Failed Jobs with explanations
             Write-Host "`n# FAILED JOBS #" -ForegroundColor Red
             $failedJobs = $jobStatuses | Where-Object { $_.LastRunOutcome -eq "Failed" -and $_.JobName -ne "CONNECTION_ERROR" -and $_.JobName -ne "ERROR" }
-            
+           
             if ($failedJobs.Count -gt 0) {
                 foreach ($job in $failedJobs) {
                     Write-Host "Job: $($job.JobName)" -ForegroundColor Yellow
                     Write-Host "Instance: $($job.InstanceName)"
                     Write-Host "Last Run: $($job.LastRunDate)"
                     Write-Host "Duration: $($job.LastRunDuration)"
-                    
+                   
                     # Display detailed failure information
                     if (-not [string]::IsNullOrEmpty($job.FailureDetails)) {
                         Write-Host "Failure Details: $($job.FailureDetails)" -ForegroundColor Red
@@ -1318,28 +1361,28 @@ foreach ($currentServer in $servers) {
                     else {
                         Write-Host "No detailed failure information available" -ForegroundColor Yellow
                     }
-                    
+                   
                     Write-Host "-" * 60
                 }
             }
             else {
                 Write-Host "No failed jobs found" -ForegroundColor Green
             }
-            
+           
             # Display Successful Jobs
             Write-Host "`n# SUCCESSFUL JOBS #" -ForegroundColor Green
             $successJobs = $jobStatuses | Where-Object { $_.LastRunOutcome -eq "Success" }
-            
+           
             if ($successJobs.Count -gt 0) {
                 Write-Host "Found $($successJobs.Count) successfully completed jobs"
-                
+               
                 # Group by category
                 $jobsByCategory = $successJobs | Group-Object -Property Category
-                
+               
                 foreach ($category in $jobsByCategory) {
                     Write-Host "`nCategory: $($category.Name)" -ForegroundColor Yellow
                     Write-Host "Jobs: $($category.Count)"
-                    
+                   
                     foreach ($job in $category.Group) {
                         Write-Host "- $($job.JobName) (Last Run: $($job.LastRunDate), Duration: $($job.LastRunDuration))"
                     }
@@ -1348,7 +1391,7 @@ foreach ($currentServer in $servers) {
             else {
                 Write-Host "No successful jobs found" -ForegroundColor Yellow
             }
-            
+           
             # Job Status Summary
             Write-Host "`n# JOB STATUS SUMMARY #" -ForegroundColor Cyan
             $failedCount = ($jobStatuses | Where-Object { $_.LastRunOutcome -eq "Failed" -and $_.JobName -ne "CONNECTION_ERROR" -and $_.JobName -ne "ERROR" }).Count
@@ -1357,7 +1400,7 @@ foreach ($currentServer in $servers) {
             $unknownCount = ($jobStatuses | Where-Object { $_.LastRunOutcome -eq "Unknown" }).Count
             $disabledCount = ($jobStatuses | Where-Object { -not $_.Enabled -and $_.JobName -ne "CONNECTION_ERROR" -and $_.JobName -ne "ERROR" }).Count
             $errorCount = ($jobStatuses | Where-Object { $_.JobName -eq "CONNECTION_ERROR" -or $_.JobName -eq "ERROR" }).Count
-            
+           
             Write-Host "Total Jobs Found: $($jobStatuses.Count - $errorCount)"
             Write-Host "Failed Jobs: $failedCount" -ForegroundColor $(if($failedCount -gt 0){"Red"}else{"Green"})
             Write-Host "Successful Jobs: $successCount" -ForegroundColor Green
@@ -1371,11 +1414,11 @@ foreach ($currentServer in $servers) {
         else {
             Write-Host "No SQL job information available for $currentServer" -ForegroundColor Red
         }
-        
+       
         # Check backup information
         Write-Host "`n## BACKUP STATUS ##" -ForegroundColor Magenta
         $backupInfo = Get-SQLServerBackupInfo -ComputerName $currentServer
-        
+       
         if ($backupInfo) {
             # Check for connection errors
             $connectionErrors = $backupInfo | Where-Object { $_.DatabaseName -eq "CONNECTION_ERROR" }
@@ -1387,30 +1430,30 @@ foreach ($currentServer in $servers) {
                     Write-Host "-" * 60
                 }
             }
-            
+           
             # Display backup location information
             Write-Host "`n# BACKUP LOCATIONS #" -ForegroundColor Cyan
             $backupLocations = $backupInfo | Where-Object { $_.BackupType -eq "INFO" }
-            
+           
             foreach ($loc in $backupLocations) {
                 Write-Host "Instance: $($loc.InstanceName)" -ForegroundColor Yellow
                 Write-Host "Backup Location: $($loc.PhysicalDeviceName)"
                 Write-Host "-" * 60
             }
-            
+           
             # Display most recent backups by database
             Write-Host "`n# RECENT BACKUPS #" -ForegroundColor Cyan
-            $recentBackups = $backupInfo | Where-Object { 
-                $_.BackupType -ne "INFO" -and 
-                $_.BackupType -ne "MISSING" -and 
-                $_.BackupType -ne "ERROR" -and 
+            $recentBackups = $backupInfo | Where-Object {
+                $_.BackupType -ne "INFO" -and
+                $_.BackupType -ne "MISSING" -and
+                $_.BackupType -ne "ERROR" -and
                 $_.DatabaseName -ne "CONNECTION_ERROR" -and
                 $_.DatabaseName -ne "ERROR"
-            } | 
-                Sort-Object -Property DatabaseName, BackupStartDate -Descending | 
-                Group-Object -Property DatabaseName | 
+            } |
+                Sort-Object -Property DatabaseName, BackupStartDate -Descending |
+                Group-Object -Property DatabaseName |
                 ForEach-Object { $_.Group | Select-Object -First 1 }
-            
+           
             foreach ($backup in $recentBackups) {
                 Write-Host "Database: $($backup.DatabaseName)" -ForegroundColor Yellow
                 Write-Host "Last Backup: $($backup.BackupStartDate)"
@@ -1419,11 +1462,11 @@ foreach ($currentServer in $servers) {
                 Write-Host "Location: $($backup.PhysicalDeviceName)"
                 Write-Host "-" * 60
             }
-            
+           
             # Display databases without recent backups
             Write-Host "`n# MISSING BACKUPS #" -ForegroundColor Red
             $missingBackups = $backupInfo | Where-Object { $_.BackupType -eq "MISSING" }
-            
+           
             if ($missingBackups.Count -gt 0) {
                 foreach ($miss in $missingBackups) {
                     Write-Host "Database: $($miss.DatabaseName)" -ForegroundColor Yellow
@@ -1445,11 +1488,11 @@ foreach ($currentServer in $servers) {
         else {
             Write-Host "No backup information available for $currentServer" -ForegroundColor Red
         }
-        
+       
         # Clean up old backups (standard cleanup)
         Write-Host "`n## BACKUP CLEANUP ##" -ForegroundColor Magenta
         $cleanupResults = Remove-OldBackups -ComputerName $currentServer -RetentionDays $backupRetentionDays
-        
+       
         if ($cleanupResults) {
             # Check for connection errors
             $connectionErrors = $cleanupResults | Where-Object { $_.FilePath -eq "CONNECTION_ERROR" }
@@ -1461,10 +1504,10 @@ foreach ($currentServer in $servers) {
                     Write-Host "-" * 60
                 }
             }
-            
+           
             # Get summary information
             $summary = $cleanupResults | Where-Object { $_.FilePath -eq "SUMMARY" }
-            
+           
             if ($summary.Count -gt 0) {
                 Write-Host "`n# CLEANUP SUMMARY #" -ForegroundColor Green
                 foreach ($sum in $summary) {
@@ -1484,15 +1527,15 @@ foreach ($currentServer in $servers) {
                     }
                 }
             }
-            
+           
             # Display any errors
-            $errors = $cleanupResults | Where-Object { 
-                $_.Status -like "Failed*" -or 
-                $_.Status -like "Error*" -and 
-                $_.FilePath -ne "CONNECTION_ERROR" -and 
+            $errors = $cleanupResults | Where-Object {
+                $_.Status -like "Failed*" -or
+                $_.Status -like "Error*" -and
+                $_.FilePath -ne "CONNECTION_ERROR" -and
                 $_.FilePath -ne "SUMMARY"
             }
-            
+           
             if ($errors.Count -gt 0) {
                 Write-Host "`n# CLEANUP ERRORS #" -ForegroundColor Red
                 foreach ($err in $errors) {
@@ -1506,7 +1549,7 @@ foreach ($currentServer in $servers) {
         else {
             Write-Host "No backup cleanup information available for $currentServer" -ForegroundColor Red
         }
-        
+       
         Write-Host "`n==============================================" -ForegroundColor Green
         Write-Host "SQL Server Monitoring completed for: $currentServer" -ForegroundColor Green
         Write-Host "Completed at: $(Get-Date)" -ForegroundColor Green
