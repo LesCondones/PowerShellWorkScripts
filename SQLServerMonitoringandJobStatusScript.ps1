@@ -1,5 +1,5 @@
 # SQL Server Monitoring and Job Status Script
-# Lester Artis 04/08/2025
+# Lester Artis 03/21/2025
 # This script monitors SQL Server instances for job status, backups, disk space, and more
 
 # Network paths and settings
