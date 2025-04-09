@@ -108,7 +108,7 @@ function Start-MaintenanceCycle {
         # Step 2: Shutdown Database (as postgres or enterprisedb user)
         $pgUser = "postgres"  # Change to "enterprisedb" if using EDB Postgres
         Update-Output "[$server] Shutting down PostgreSQL database as $pgUser..."
-        $result = Run-SSHCommand -server $server -command "pg_ctl stop -m fast" -execUser $pgUser
+        $result = Run-SSHCommand -server $server -command "ADD ACTUALLY STOP COMMAND" -execUser $pgUser
         if ($result -match "ERROR" -or $result -match "failed") {
             Update-Output "[$server] Failed to stop database: $result"
         }
@@ -148,7 +148,7 @@ function Start-MaintenanceCycle {
         
         if (-not $isRunning) {
             Update-Output "[$server] PostgreSQL is not running. Starting database..."
-            $result = Run-SSHCommand -server $server -command "pg_ctl start -w" -execUser $pgUser
+            $result = Run-SSHCommand -server $server -command "ADD ACTUALL START COMMAND" -execUser $pgUser
             
             if ($result -match "ERROR" -or $result -match "failed") {
                 Update-Output "[$server] Failed to start database: $result"
