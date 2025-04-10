@@ -86,6 +86,14 @@ function Check-PostgreSQL {
     return $result -match "accepting connections"
 }
 
+#Function to Check Barman Status
+function Check-BarmanStatus{
+    param (
+        [string]$server,
+        [string]$barmanUser = "barman"
+    )
+}
+
 # Function to run a complete maintenance cycle
 function Start-MaintenanceCycle {
     $outputBox.Clear()
@@ -141,8 +149,21 @@ function Start-MaintenanceCycle {
         }
         $currentStep++
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
+
+        # Step 5: Reboot
+        Update-Output "[$server] Rebooting server as root..."
+        $result = Run-SSHCommand -server $server -command "init 6" -execUser "root"
+        if ($result -match "ERROR") {
+            Update-Output "[$server] Failed to initiate reboot: $result"
+        }
+        else {
+            Update-Output "[$server] Reboot command sent successfully."
+        }
+        $currentStep++
+        $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
+
         
-        # Step 5: Check if database is running and start if needed
+        # Step 6: Check if database is running and start if needed
         Update-Output "[$server] Checking if PostgreSQL is running..."
         $isRunning = Check-PostgreSQL -server $server -pgUser $pgUser
         
@@ -162,7 +183,12 @@ function Start-MaintenanceCycle {
         }
         $currentStep++
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
+
+        # Step 7: Check if Barman is running
+        
     }
+
+   
     
     Update-Output "Maintenance cycle completed for all servers."
     $runButton.Enabled = $true
