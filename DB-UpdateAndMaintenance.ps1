@@ -87,12 +87,45 @@ function Check-PostgreSQL {
 }
 
 #Function to Check Barman Status
-
+function Check-FixBarman {
+    param (
+        [string]$server
+        [string]$barmanUser = "barman"
+    )
+    
+    Update-Output "[$server] Checking barman status..."
+    $result = Run-SSHCommand -server $server -command "barman check pg" -execUser $barmanUser
+    
+    if ($result -match "FAILURE") {
+        Update-Output "[$server] Barman check failed. Restarting WAL receiver..."
+        $restartResult = Run-SSHCommand -server $server -command "barman receive-wal pg &" -execUser $barmanUser
+        
+        # Wait a moment for the process to start
+        Start-Sleep -Seconds 5
+        
+        # Check barman status again
+        Update-Output "[$server] Checking barman status after restart..."
+        $recheckResult = Run-SSHCommand -server $server -command "barman check pg" -execUser $barmanUser
+        
+        if ($recheckResult -match "FAILURE") {
+            Update-Output "[$server] WARNING: Barman is still reporting failures after restart"
+            return $false
+        }
+        else {
+            Update-Output "[$server] Barman is now running correctly"
+            return $true
+        }
+    }
+    else {
+        Update-Output "[$server] Barman is running correctly"
+        return $true
+    }
+}
 
 # Function to run a complete maintenance cycle
 function Start-MaintenanceCycle {
     $outputBox.Clear()
-    $totalSteps = $servers.Count * 5  # Added one more step for DB restart check
+    $totalSteps = $servers.Count * 7  # Added one more step for DB restart check
     $currentStep = 0
     
     foreach ($server in $servers) {
@@ -147,38 +180,37 @@ function Start-MaintenanceCycle {
 
         # Step 5: Reboot
        Update-Output "[$server] Rebooting server..."
-$result = Run-SSHCommand -server $server -command "init 6" -execUser "root"
-Update-Output "[$server] Reboot command sent. Waiting for server to come back online..."
-
-# Wait for server to reboot
-$timeout = 300 # 5 minutes timeout
-$timer = [Diagnostics.Stopwatch]::StartNew()
-$isOnline = $false
-
-while (-not $isOnline -and $timer.Elapsed.TotalSeconds -lt $timeout) {
-    Start-Sleep -Seconds 15
-    try {
-        $pingTest = Test-Connection -ComputerName $server -Count 1 -Quiet
+       $result = Run-SSHCommand -server $server -command "init 6" -execUser "root"
+       Update-Output "[$server] Reboot command sent. Waiting for server to come back online..."
+       
+       # Wait for server to reboot
+       $timeout = 300 # 5 minutes timeout
+       $timer = [Diagnostics.Stopwatch]::StartNew()
+       $isOnline = $false
+       while (-not $isOnline -and $timer.Elapsed.TotalSeconds -lt $timeout) {
+           Start-Sleep -Seconds 15
+            try {
+                    $pingTest = Test-Connection -ComputerName $server -Count 1 -Quiet
         if ($pingTest) {
             # Additional wait for SSH to become available
             Start-Sleep -Seconds 30
             $isOnline = $true
         }
     }
-    catch {
+        catch {
         # Continue waiting
     }
     Update-Output "[$server] Waiting for server to come back online... ($([int]$timer.Elapsed.TotalSeconds) seconds)"
 }
 
-if (-not $isOnline) {
-    Update-Output "[$server] WARNING: Server did not come back online within timeout period"
-}
-else {
-    Update-Output "[$server] Server is back online"
-}
-$currentStep++
-$progressBar.Value = [int](($currentStep / $totalSteps) * 100)
+    if (-not $isOnline) {
+            Update-Output "[$server] WARNING: Server did not come back online within timeout period"
+    }
+        else {
+                Update-Output "[$server] Server is back online"
+            }
+        $currentStep++
+        $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
 
         
         # Step 6: Check if database is running and start if needed
@@ -203,7 +235,9 @@ $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
 
         # Step 7: Check if Barman is running
-        
+        $barmanStatus = Check-FixBarman -server $server
+        $currentStep++
+        $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
     }
 
    
