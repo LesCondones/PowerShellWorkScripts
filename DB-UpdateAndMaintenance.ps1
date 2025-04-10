@@ -1,3 +1,6 @@
+# Author: Lester Artus
+# Created 04/09/2025
+
 # Load Windows Forms and Drawing assemblies
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
