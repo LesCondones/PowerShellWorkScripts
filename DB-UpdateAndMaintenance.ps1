@@ -82,7 +82,7 @@ function Update-Output {
 function Check-PostgreSQL {
     param (
         [string]$server,
-        [string]$pgUser = "postgres"
+        [string]$pgUser = "enterprisedb"
     )
     
     $result = Run-SSHCommand -server $server -command "pg_isready" -execUser $pgUser
@@ -90,37 +90,45 @@ function Check-PostgreSQL {
 }
 
 #Function to Check Barman Status
+# Function to check and fix Barman status
 function Check-FixBarman {
     param (
-        [string]$server
-        [string]$barmanUser = "barman"
+        [string]$server,
+        [string]$barmanUser ="barman"
     )
     
     Update-Output "[$server] Checking barman status..."
     $result = Run-SSHCommand -server $server -command "barman check pg" -execUser $barmanUser
     
-    if ($result -match "FAILURE") {
-        Update-Output "[$server] Barman check failed. Restarting WAL receiver..."
-        $restartResult = Run-SSHCommand -server $server -command "barman receive-wal pg &" -execUser $barmanUser
-        
-        # Wait a moment for the process to start
+    # Check for replication slot missing error and fix
+    if ($result -match "replication slot .* doesn't exist") {
+        Update-Output "[$server] Replication slot missing. Creating slot..."
+        $createSlotResult = Run-SSHCommand -server $server -command "barman receive-wal --create-slot pg" -execUser $barmanUser
+        Update-Output "[$server] Create slot result: $createSlotResult"
         Start-Sleep -Seconds 5
-        
-        # Check barman status again
-        Update-Output "[$server] Checking barman status after restart..."
-        $recheckResult = Run-SSHCommand -server $server -command "barman check pg" -execUser $barmanUser
-        
-        if ($recheckResult -match "FAILURE") {
-            Update-Output "[$server] WARNING: Barman is still reporting failures after restart"
-            return $false
-        }
-        else {
-            Update-Output "[$server] Barman is now running correctly"
-            return $true
-        }
     }
-    else {
-        Update-Output "[$server] Barman is running correctly"
+    
+    # Check for receive-wal not running error and fix
+    if ($result -match "receive-wal running: FAILED") {
+        Update-Output "[$server] WAL receiver not running. Starting WAL receiver..."
+        $receiveWalResult = Run-SSHCommand -server $server -command "barman receive-wal pg" -execUser $barmanUser
+        Update-Output "[$server] Start WAL receiver result: $receiveWalResult"
+        Start-Sleep -Seconds 5
+    }
+    
+    # Final verification
+    Update-Output "[$server] Performing final barman check..."
+    $finalCheck = Run-SSHCommand -server $server -command "barman check pg" -execUser $barmanUser
+    
+    # Log the detailed results for troubleshooting
+    Update-Output "[$server] Barman status details:"
+    Update-Output $finalCheck
+    
+    if ($finalCheck -match "FAILED") {
+        Update-Output "[$server] WARNING: Some barman checks still failing after fixes."
+        return $false
+    } else {
+        Update-Output "[$server] All barman checks passed successfully."
         return $true
     }
 }
@@ -145,7 +153,7 @@ function Start-MaintenanceCycle {
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
         
         # Step 2: Shutdown Database (as postgres or enterprisedb user)
-        $pgUser = "postgres"  # Change to "enterprisedb" if using EDB Postgres
+        $pgUser = "enterprisedb"  # Change to "enterprisedb" if using EDB Postgres
         Update-Output "[$server] Shutting down PostgreSQL database as $pgUser..."
         $result = Run-SSHCommand -server $server -command "ADD ACTUALLY STOP COMMAND" -execUser $pgUser
         if ($result -match "ERROR" -or $result -match "failed") {
@@ -218,24 +226,60 @@ function Start-MaintenanceCycle {
         
         # Step 6: Check if database is running and start if needed
         Update-Output "[$server] Checking if PostgreSQL is running..."
-        $isRunning = Check-PostgreSQL -server $server -pgUser $pgUser
-        
-        if (-not $isRunning) {
-            Update-Output "[$server] PostgreSQL is not running. Starting database..."
-            $result = Run-SSHCommand -server $server -command "ADD ACTUALL START COMMAND" -execUser $pgUser
-            
-            if ($result -match "ERROR" -or $result -match "failed") {
-                Update-Output "[$server] Failed to start database: $result"
-            }
-            else {
-                Update-Output "[$server] PostgreSQL database started successfully."
-            }
-        }
-        else {
-            Update-Output "[$server] PostgreSQL is already running."
-        }
-        $currentStep++
-        $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
+
+        # Variables for PostgreSQL setup - adjust these for your environment
+        $pgPort = "5444"  # The port from the error message
+        $pgDataDir = "/var/lib/edb/as14/data"  # Default EDB data directory, adjust as needed
+
+        # Check if PostgreSQL process is running
+        $processCheck = Run-SSHCommand -server $server -command "ps -ef | grep enterpr+" -execUser $pgUser
+if (-not ($processCheck -match "enterpr+")) {
+    Update-Output "[$server] PostgreSQL process not found. Attempting to start..."
+    
+    # Start PostgreSQL with specific data directory
+    $startResult = Run-SSHCommand -server $server -command "ADD COMMAND" -execUser $pgUser
+    Update-Output "[$server] PostgreSQL start attempt result: $startResult"
+    
+    # Wait for PostgreSQL to initialize
+    Start-Sleep -Seconds 10
+} else {
+    Update-Output "[$server] PostgreSQL process is running. Checking socket connectivity..."
+}
+
+# Verify PostgreSQL is responding on the socket
+$socketCheck = Run-SSHCommand -server $server -command "psql -p $pgPort -c 'SELECT 1'" -execUser $pgUser
+
+if ($socketCheck -match "ERROR" -or $socketCheck -match "failed") {
+    Update-Output "[$server] Socket connection failed. Attempting to restart PostgreSQL..."
+    
+    # Attempt to stop PostgreSQL gracefully first
+    $stopResult = Run-SSHCommand -server $server -command "pg_ctl stop -D $pgDataDir -m fast" -execUser $pgUser
+    Update-Output "[$server] PostgreSQL stop attempt: $stopResult"
+    Start-Sleep -Seconds 5
+    
+    # Start PostgreSQL again
+    $startResult = Run-SSHCommand -server $server -command "add command" -execUser $pgUser
+    Update-Output "[$server] PostgreSQL restart attempt: $startResult"
+    Start-Sleep -Seconds 10
+    
+    # Final verification
+    $finalCheck = Run-SSHCommand -server $server -command "psql -p $pgPort -c 'SELECT version()'" -execUser $pgUser
+    
+    if ($finalCheck -match "PostgreSQL") {
+        Update-Output "[$server] PostgreSQL successfully restarted and responding."
+    } else {
+        Update-Output "[$server] WARNING: PostgreSQL still not responding after restart attempts."
+        # Check logs for errors
+        $logCheck = Run-SSHCommand -server $server -command "tail -n 20 $pgDataDir/pg_log/postgresql-*.log" -execUser $pgUser
+        Update-Output "[$server] Recent PostgreSQL log entries:"
+        Update-Output $logCheck
+    }
+} else {
+    Update-Output "[$server] PostgreSQL is running and accepting connections."
+}
+
+$currentStep++
+$progressBar.Value = [int](($currentStep / $totalSteps) * 100)
 
         # Step 7: Check if Barman is running
         $barmanStatus = Check-FixBarman -server $server
