@@ -1,3 +1,9 @@
+# Author: Lester Artis Jr.
+# Created: 04/09/2025
+
+# Took already created script and made it more efficient
+
+
 # Load Windows Forms and Drawing assemblies
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
