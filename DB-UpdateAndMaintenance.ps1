@@ -87,12 +87,7 @@ function Check-PostgreSQL {
 }
 
 #Function to Check Barman Status
-function Check-BarmanStatus{
-    param (
-        [string]$server,
-        [string]$barmanUser = "barman"
-    )
-}
+
 
 # Function to run a complete maintenance cycle
 function Start-MaintenanceCycle {
@@ -151,16 +146,39 @@ function Start-MaintenanceCycle {
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
 
         # Step 5: Reboot
-        Update-Output "[$server] Rebooting server as root..."
-        $result = Run-SSHCommand -server $server -command "init 6" -execUser "root"
-        if ($result -match "ERROR") {
-            Update-Output "[$server] Failed to initiate reboot: $result"
+       Update-Output "[$server] Rebooting server..."
+$result = Run-SSHCommand -server $server -command "init 6" -execUser "root"
+Update-Output "[$server] Reboot command sent. Waiting for server to come back online..."
+
+# Wait for server to reboot
+$timeout = 300 # 5 minutes timeout
+$timer = [Diagnostics.Stopwatch]::StartNew()
+$isOnline = $false
+
+while (-not $isOnline -and $timer.Elapsed.TotalSeconds -lt $timeout) {
+    Start-Sleep -Seconds 15
+    try {
+        $pingTest = Test-Connection -ComputerName $server -Count 1 -Quiet
+        if ($pingTest) {
+            # Additional wait for SSH to become available
+            Start-Sleep -Seconds 30
+            $isOnline = $true
         }
-        else {
-            Update-Output "[$server] Reboot command sent successfully."
-        }
-        $currentStep++
-        $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
+    }
+    catch {
+        # Continue waiting
+    }
+    Update-Output "[$server] Waiting for server to come back online... ($([int]$timer.Elapsed.TotalSeconds) seconds)"
+}
+
+if (-not $isOnline) {
+    Update-Output "[$server] WARNING: Server did not come back online within timeout period"
+}
+else {
+    Update-Output "[$server] Server is back online"
+}
+$currentStep++
+$progressBar.Value = [int](($currentStep / $totalSteps) * 100)
 
         
         # Step 6: Check if database is running and start if needed
