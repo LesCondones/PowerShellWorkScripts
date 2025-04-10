@@ -1,4 +1,4 @@
-# Author: Lester Artus
+# Author: Lester Artis
 # Created 04/09/2025
 
 # Load Windows Forms and Drawing assemblies
