@@ -93,6 +93,50 @@ function Update-Output {
     $outputBox.AppendText("$message`n")
     $outputBox.ScrollToCaret()
     [System.Windows.Forms.Application]::DoEvents()
+}
+
+# Function to check and fix Barman status
+function Check-FixBarman {
+    param (
+        [string]$server
+    )
+    
+    Update-Output "[$server] Checking barman status..."
+    $result = Run-SSHCommand -server $server -command "barman check pg" -execUser "barman"
+    
+    # Check for replication slot missing error and fix
+    if ($result -match "replication slot .* doesn't exist") {
+        Update-Output "[$server] Replication slot missing. Creating slot..."
+        $createSlotResult = Run-SSHCommand -server $server -command "barman receive-wal --create-slot pg" -execUser "barman"
+        Update-Output "[$server] Create slot result: $createSlotResult"
+        Start-Sleep -Seconds 5
+    }
+    
+    # Check for receive-wal not running error and fix
+    if ($result -match "receive-wal running: FAILED") {
+        Update-Output "[$server] WAL receiver not running. Starting WAL receiver..."
+        $receiveWalResult = Run-SSHCommand -server $server -command "barman receive-wal pg" -execUser "barman"
+        Update-Output "[$server] Start WAL receiver result: $receiveWalResult"
+        Start-Sleep -Seconds 5
+    }
+    
+    # Final verification
+    Update-Output "[$server] Performing final barman check..."
+    $finalCheck = Run-SSHCommand -server $server -command "barman check pg" -execUser "barman"
+    
+    # Log the detailed results for troubleshooting
+    Update-Output "[$server] Barman status details:"
+    Update-Output $finalCheck
+    
+    if ($finalCheck -match "FAILED") {
+        Update-Output "[$server] WARNING: Some barman checks still failing after fixes."
+        return $false
+    } else {
+        Update-Output "[$server] All barman checks passed successfully."
+        return $true
+    }
+}
+
 # Function to run a complete maintenance cycle
 function Start-MaintenanceCycle {
     $outputBox.Clear()
@@ -266,4 +310,4 @@ $closeButton.Add_Click({ $form.Close() })
 $buttonPanel.Controls.Add($closeButton)
 
 # Show the form
-$form.ShowDialog(
+$form.ShowDialog()
