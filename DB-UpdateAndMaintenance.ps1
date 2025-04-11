@@ -82,8 +82,8 @@ $serverGroup.Controls.Add($serverListBox)
 # Options group
 $optionsGroup = New-Object System.Windows.Forms.GroupBox
 $optionsGroup.Text = "Options"
-$optionsGroup.Dock = [System.Windows.Forms.DockStyle]::Top
-$optionsGroup.Height = 170
+$optionsGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
+$optionsGroup.Height = 230
 $optionsGroup.Top = 210
 $optionsGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $leftPanel.Controls.Add($optionsGroup)
@@ -165,7 +165,7 @@ $mainContainer.Controls.Add($controlsPanel, 1, 1)
 # Progress bar
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Location = New-Object System.Drawing.Point(0, 5)
-$progressBar.Size = New-Object System.Drawing.Size($controlsPanel.Width, 20)
+$progressBar.Size = New-Object System.Drawing.Size(0, 20)
 $progressBar.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Top
 $progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
 $controlsPanel.Controls.Add($progressBar)
@@ -173,7 +173,7 @@ $controlsPanel.Controls.Add($progressBar)
 # Button container
 $buttonContainer = New-Object System.Windows.Forms.FlowLayoutPanel
 $buttonContainer.Location = New-Object System.Drawing.Point(0, 30)
-$buttonContainer.Size = New-Object System.Drawing.Size($controlsPanel.Width, 30)
+$buttonContainer.Size = New-Object System.Drawing.Size(0, 30)
 $buttonContainer.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
 $buttonContainer.FlowDirection = [System.Windows.Forms.FlowDirection]::RightToLeft
 $buttonContainer.WrapContents = $false
@@ -639,40 +639,37 @@ function Start-MaintenanceCycle {
         $currentStep++
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
        
-        # Step 6: Check and ensure PostgreSQL is running correctly
-        Update-Output "[$server] Checking if PostgreSQL is running..."
-        $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
+        # Step 6: Check and start PostgreSQL if needed after reboot
+Update-Output "[$server] Checking if PostgreSQL is running after system reboot..."
+$pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
 
-        if (-not $pgStatus.IsHealthy) {
-            Update-Output "[$server] PostgreSQL issues detected: Process running: $($pgStatus.ProcessRunning), Socket connected: $($pgStatus.SocketConnected)" "WARNING"
-            
-            # Attempt to stop PostgreSQL gracefully first if process is running
-            if ($pgStatus.ProcessRunning) {
-                $stopResult = Run-SSHCommand -server $server -command "pg_ctl -D $pgDataPath stop -m fast" -execUser $pgUser
-                Update-Output "[$server] PostgreSQL stop attempt: $stopResult"
-                Start-Sleep -Seconds 5
-            }
-            
-            # Start PostgreSQL
-            $startResult = Run-SSHCommand -server $server -command "nohup pg_ctl -D $pgDataPath -l $pgDataPath/pg_log/startup.log start > /dev/null 2>&1 &" -execUser $pgUser
-            Update-Output "[$server] PostgreSQL start attempt result: $startResult"
-            Start-Sleep -Seconds 10
-            
-            # Final verification
-            $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
-            
-            if ($pgStatus.IsHealthy) {
-                Update-Output "[$server] PostgreSQL successfully restarted and responding." "SUCCESS"
-            } else {
-                Update-Output "[$server] WARNING: PostgreSQL still not responding after restart attempts." "ERROR"
-                # Check logs for errors
-                $logCheck = Run-SSHCommand -server $server -command "tail -n 20 $pgDataPath/pg_log/startup.log" -execUser $pgUser
-                Update-Output "[$server] Recent PostgreSQL log entries:"
-                Update-Output $logCheck
-            }
-        } else {
-            Update-Output "[$server] PostgreSQL is running and accepting connections." "SUCCESS"
-        }
+if (-not $pgStatus.IsHealthy) {
+    Update-Output "[$server] $pgUser database not running or not responding. Will start using detected data path: $pgDataPath"
+    
+    # Start database using the detected user and data path
+    $startCommand = "nohup pg_ctl -D $pgDataPath -l $pgDataPath/pg_log/startup.log start > /dev/null 2>&1 &"
+    $startResult = Run-SSHCommand -server $server -command $startCommand -execUser $pgUser
+    
+    Update-Output "[$server] Database start initiated with command: $startCommand"
+    Update-Output "[$server] Waiting for database to initialize..."
+    Start-Sleep -Seconds 10
+    
+    # Final verification
+    $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
+    
+    if ($pgStatus.IsHealthy) {
+        Update-Output "[$server] $pgUser database successfully started and responding." "SUCCESS"
+    } else {
+        Update-Output "[$server] WARNING: $pgUser database failed to start properly." "ERROR"
+        # Check logs for errors
+        $logCheck = Run-SSHCommand -server $server -command "tail -n 20 $pgDataPath/pg_log/startup.log" -execUser $pgUser
+        Update-Output "[$server] Recent database log entries:"
+        Update-Output $logCheck
+    }
+} else {
+    Update-Output "[$server] $pgUser database is already running and accepting connections." "SUCCESS"
+}
+
         $currentStep++
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
        
