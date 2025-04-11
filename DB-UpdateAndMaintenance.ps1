@@ -332,8 +332,8 @@ function Detect-ServerConfig {
     Update-Output "[$server] Detecting server configuration..."
     
     # First check which database user exists: enterprisedb or postgres
-    $entDbCheck = Run-SSHCommand -server $server -command "id -u enterprisedb 2>/dev/null || echo 'Not found'" -execUser "root"
-    $pgCheck = Run-SSHCommand -server $server -command "id -u postgres 2>/dev/null || echo 'Not found'" -execUser "root"
+    $entDbCheck = Run-SSHCommand -server $server -command "id -u enterprisedb 2>/dev/null || echo 'Not found'" -execUser "enterprisedb"
+    $pgCheck = Run-SSHCommand -server $server -command "id -u postgres 2>/dev/null || echo 'Not found'" -execUser "postgres"
     
     $pgUser = ""
     if ($entDbCheck -ne "Not found" -and $entDbCheck -notmatch "ERROR") {
@@ -349,17 +349,12 @@ function Detect-ServerConfig {
     
     # Paths to check for EDB installs
     $edbPaths = @(
-        "/edbas/entdb/edb-5444",
-        "/var/lib/edb/as14/data",
-        "/opt/PostgresPlus/14AS/data",
-        "/var/lib/ppas/14/data"
+        "/edbas/entdb/edb-5444"
     )
     
     # Paths to check for PostgreSQL installs
     $pgPaths = @(
-        "/pgsql/pgdbs/pg-5444",
-        "/var/lib/pgsql/14/data",
-        "/var/lib/pgsql/data"
+        "/pgsql/pgdbs/pg-5444"
     )
     
     # Select paths to check based on detected user
@@ -668,7 +663,8 @@ function Start-MaintenanceCycle {
         $currentStep++
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
        
-        Update-Output "[$server] Checking if PostgreSQL is running after system reboot..."
+  # Step 6: Check and start PostgreSQL if needed after reboot
+Update-Output "[$server] Checking if PostgreSQL is running after system reboot..."
 $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
 
 if (-not $pgStatus.IsHealthy) {
@@ -725,7 +721,6 @@ if (-not $pgStatus.IsHealthy) {
 
 $currentStep++
 $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
-       
         # Step 7: Check if barman is running properly (only if barman is available)
         if ($config.HasBarman) {
             $barmanStatus = Check-FixBarman -server $server -barmanUser $config.BarmanUser -barmanName $config.BarmanName
