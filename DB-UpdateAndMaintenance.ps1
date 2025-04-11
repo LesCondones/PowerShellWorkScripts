@@ -261,12 +261,8 @@ function Run-SSHCommand {
         if ($execUser -eq "root") {
             # For root commands, use dzdo directly
             $sshCommand = "ssh -o GSSAPIAuthentication=yes -o ConnectTimeout=10 ${connectAs}@${server} `"dzdo su - -c '$command'`""
-        } elseif ($execUser -eq "postgres" -or $execUser -eq "enterprisedb" -or $execUser -eq "barman") {
-            # For service accounts, use dzdo to switch to that user
-            $sshCommand = "ssh -o GSSAPIAuthentication=yes -o ConnectTimeout=10 ${connectAs}@${server} `"dzdo su - $execUser -c '$command'`""
-        } else {
-            # For any other user, same pattern as service accounts
-            $sshCommand = "ssh -o GSSAPIAuthentication=yes -o ConnectTimeout=10 ${connectAs}@${server} `"dzdo su - $execUser -c '$command'`""
+        } else{
+            $sshCommand = "ssh -o GSSAPIAuthentication=yes -o ConnectTimeout=10 ${connectAs}@${server} `"dzdo su -  $execUser -c '$command'`""
         }
        
         # Add timeout handling for commands
@@ -300,7 +296,7 @@ function Update-Output {
    
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $fullMessage = "[$timestamp] $message"
-    
+   
     # Set color based on message type
     switch ($type) {
         "SUCCESS" { $color = [System.Drawing.Color]::FromArgb(39, 174, 96) }
@@ -308,17 +304,17 @@ function Update-Output {
         "ERROR"   { $color = [System.Drawing.Color]::FromArgb(192, 57, 43) }
         default   { $color = [System.Drawing.Color]::FromArgb(44, 62, 80) }
     }
-    
+   
     # Add colored text
     $outputBox.SelectionStart = $outputBox.TextLength
     $outputBox.SelectionLength = 0
     $outputBox.SelectionColor = $color
     $outputBox.AppendText("$fullMessage`n")
     $outputBox.ScrollToCaret()
-    
+   
     # Update status bar
     $statusLabel.Text = $message
-    
+   
     # Update UI
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -328,13 +324,13 @@ function Detect-ServerConfig {
     param (
         [string]$server
     )
-    
+   
     Update-Output "[$server] Detecting server configuration..."
-    
+   
     # First check which database user exists: enterprisedb or postgres
     $entDbCheck = Run-SSHCommand -server $server -command "id -u enterprisedb 2>/dev/null || echo 'Not found'" -execUser "enterprisedb"
     $pgCheck = Run-SSHCommand -server $server -command "id -u postgres 2>/dev/null || echo 'Not found'" -execUser "postgres"
-    
+   
     $pgUser = ""
     if ($entDbCheck -ne "Not found" -and $entDbCheck -notmatch "ERROR") {
         $pgUser = "enterprisedb"
@@ -346,21 +342,21 @@ function Detect-ServerConfig {
         Update-Output "[$server] ERROR: Could not detect database user (neither enterprisedb nor postgres found)" "ERROR"
         return $null
     }
-    
+   
     # Paths to check for EDB installs
     $edbPaths = @(
         "/edbas/entdb/edb-5444"
     )
-    
+   
     # Paths to check for PostgreSQL installs
     $pgPaths = @(
         "/pgsql/pgdbs/pg-5444"
     )
-    
+   
     # Select paths to check based on detected user
     $pathsToCheck = if ($pgUser -eq "enterprisedb") { $edbPaths } else { $pgPaths }
     $pgDataPath = ""
-    
+   
     # Check each potential path
     foreach ($path in $pathsToCheck) {
         $pathCheck = Run-SSHCommand -server $server -command "test -d $path && echo 'Found' || echo 'Not found'" -execUser $pgUser
@@ -370,7 +366,7 @@ function Detect-ServerConfig {
             break
         }
     }
-    
+   
     # If no path was found, try to check environment variable
     if ([string]::IsNullOrEmpty($pgDataPath)) {
         $envCheck = Run-SSHCommand -server $server -command "echo \$PGDATA" -execUser $pgUser
@@ -379,7 +375,7 @@ function Detect-ServerConfig {
             Update-Output "[$server] Found database path from PGDATA environment variable: $pgDataPath" "SUCCESS"
         }
     }
-    
+   
     # If still no path, check postmaster.pid locations
     if ([string]::IsNullOrEmpty($pgDataPath)) {
         $pidCheck = Run-SSHCommand -server $server -command "find / -name postmaster.pid -path '*/data/*' 2>/dev/null | head -1" -execUser "root"
@@ -388,20 +384,20 @@ function Detect-ServerConfig {
             Update-Output "[$server] Found database path from postmaster.pid: $pgDataPath" "SUCCESS"
         }
     }
-    
+   
     # Check if barman is available
-    $barmanCheck = Run-SSHCommand -server $server -command "id -u barman 2>/dev/null || echo 'Not found'" -execUser "root"
+    $barmanCheck = Run-SSHCommand -server $server -command "id -u barman 2>/dev/null || echo 'Not found'" -execUser "barman"
     $hasBarman = ($barmanCheck -ne "Not found" -and $barmanCheck -notmatch "ERROR")
-    
+   
     # Determine barman database name
     $barmanName = ""
     $barmanUser = ""
     if ($hasBarman) {
         $barmanUser = "barman"
-        
+       
         # Check what barman servers are configured
         $barmanServers = Run-SSHCommand -server $server -command "barman list-server 2>/dev/null || echo 'Not configured'" -execUser $barmanUser
-        
+       
         if ($barmanServers -notmatch "Not configured" -and $barmanServers -notmatch "ERROR") {
             # Use first available barman server
             $barmanName = ($barmanServers -split '\n')[0].Trim()
@@ -413,7 +409,7 @@ function Detect-ServerConfig {
             } else {
                 $barmanName = "pg-5444"
             }
-            
+           
             # Check if this guess is valid
             $barmanConfigCheck = Run-SSHCommand -server $server -command "barman show-server $barmanName 2>/dev/null || echo 'Not configured'" -execUser $barmanUser
             if ($barmanConfigCheck -match "Not configured" -or $barmanConfigCheck -match "ERROR") {
@@ -424,15 +420,15 @@ function Detect-ServerConfig {
             }
         }
     }
-    
+   
     # Return the configuration
     if ([string]::IsNullOrEmpty($pgDataPath)) {
         Update-Output "[$server] WARNING: Could not detect database data path" "WARNING"
         return $null
     }
-    
+   
     Update-Output "[$server] Configuration detected successfully" "SUCCESS"
-    
+   
     return @{
         PgUser = $pgUser
         PgDataPath = $pgDataPath
@@ -450,17 +446,21 @@ function Check-PostgreSQL {
         [string]$pgDataPath,
         [string]$pgPort = "5444"
     )
-    
+   
     # Check if process is running
     $processPattern = if ($pgUser -eq "enterprisedb") { "enterpr+" } else { "postgres" }
-    $processCheck = Run-SSHCommand -server $server -command "ps -ef | grep $processPattern | grep -v grep" -execUser $pgUser
+    $processCheck = Run-SSHCommand -server $server -command "ps -ef | grep -E $processPattern | grep -v grep" -execUser $pgUser
     $processRunning = ($processCheck -match "postgres")
-    
-    # Check socket connectivity
-    $socketCheck = Run-SSHCommand -server $server -command "psql -p $pgPort -c 'SELECT 1'" -execUser $pgUser
-    $socketConnected = !($socketCheck -match "ERROR" -or $socketCheck -match "failed")
+   
+    # Check socket connectivity using pg_isready
+    $readyCheck = Run-SSHCommand -server $server -command "pg_isready -p $pgPort 2>&1 || echo 'Not ready'" -execUser $pgUser
+    $isReady = ($readyCheck -match "accepting connections")
+   
+    # Also test with psql for comprehensive testing
+    $socketCheck = Run-SSHCommand -server $server -command "psql -p $pgPort -c 'SELECT 1' 2>&1 || echo 'Connection failed'" -execUser $pgUser
+    $socketConnected = !($socketCheck -match "Connection failed" -or $socketCheck -match "failed" -or $socketCheck -match "ERROR")
     $socketError = ($socketCheck -match "socket.*failed: No such file or directory")
-    
+   
     # Return combined status
     return @{
         ProcessRunning = $processRunning
@@ -470,21 +470,21 @@ function Check-PostgreSQL {
     }
 }
 
+
 # Function to check and fix Barman status
 function Check-FixBarman {
     param (
         [string]$server,
-        [string]$barmanUser,
-        [string]$barmanName
+        [string]$barmanUser
     )
    
     Update-Output "[$server] Checking barman status..."
-    $result = Run-SSHCommand -server $server -command "barman check $barmanName" -execUser $barmanUser
+    $result = Run-SSHCommand -server $server -command "barman check edb-5444" -execUser "barman"
    
     # Check for replication slot missing error and fix
     if ($result -match "replication slot .* doesn't exist") {
         Update-Output "[$server] Replication slot missing. Creating slot..." "WARNING"
-        $createSlotResult = Run-SSHCommand -server $server -command "barman receive-wal --create-slot $barmanName" -execUser $barmanUser
+        $createSlotResult = Run-SSHCommand -server $server -command "barman receive-wal --create-slot edb-5444" -execUser "barman"
         Update-Output "[$server] Create slot result: $createSlotResult"
         Start-Sleep -Seconds 5
     }
@@ -492,14 +492,14 @@ function Check-FixBarman {
     # Check for receive-wal not running error and fix
     if ($result -match "receive-wal running: FAILED") {
         Update-Output "[$server] WAL receiver not running. Starting WAL receiver..." "WARNING"
-        $receiveWalResult = Run-SSHCommand -server $server -command "barman receive-wal $barmanName" -execUser $barmanUser
+        $receiveWalResult = Run-SSHCommand -server $server -command "barman receive-wal edb-5444 &" -execUser "barman"
         Update-Output "[$server] Start WAL receiver result: $receiveWalResult"
         Start-Sleep -Seconds 5
     }
    
     # Final verification
     Update-Output "[$server] Performing final barman check..."
-    $finalCheck = Run-SSHCommand -server $server -command "barman check $barmanName" -execUser $barmanUser
+    $finalCheck = Run-SSHCommand -server $server -command "barman check edb-5444" -execUser "barman"
    
     # Log the detailed results for troubleshooting
     Update-Output "[$server] Barman status details:"
@@ -517,7 +517,7 @@ function Check-FixBarman {
 # Function to run a complete maintenance cycle
 function Start-MaintenanceCycle {
     $outputBox.Clear()
-    
+   
     # Get selected servers
     $selectedServers = @()
     for ($i = 0; $i -lt $serverListBox.Items.Count; $i++) {
@@ -525,12 +525,12 @@ function Start-MaintenanceCycle {
             $selectedServers += $serverListBox.Items[$i]
         }
     }
-    
+   
     if ($selectedServers.Count -eq 0) {
         Update-Output "No servers selected. Please select at least one server." "ERROR"
         return
     }
-    
+   
     # Get selected tasks
     $tasks = @()
     if ($chkRepoCheck.Checked) { $tasks += "Check repositories" }
@@ -538,32 +538,32 @@ function Start-MaintenanceCycle {
     if ($chkUpdateCheck.Checked) { $tasks += "Check for updates" }
     if ($chkUpdateApply.Checked) { $tasks += "Apply updates" }
     if ($chkReboot.Checked) { $tasks += "Reboot servers" }
-    
+   
     Update-Output "Starting maintenance on $($selectedServers.Count) server(s) with tasks: $($tasks -join ', ')" "INFO"
-    
+   
     # Calculate total steps
     $totalSteps = $selectedServers.Count * (5 + 2) # 5 standard steps + DB restart + barman check
     $currentStep = 0
-    
+   
     foreach ($server in $selectedServers) {
         # Detect server configuration
         $config = Detect-ServerConfig -server $server
-        
+       
         if ($config -eq $null) {
             Update-Output "[$server] ERROR: Failed to detect server configuration, skipping server" "ERROR"
             $currentStep += 7  # Skip all steps for this server
             $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
             continue
         }
-        
+       
         $pgUser = $config.PgUser
         $pgDataPath = $config.PgDataPath
         $pgPort = "5444"  # Assuming standard port for all servers
-        
+       
         # Step 1: Check Repositories (explicitly as root)
         if ($chkRepoCheck.Checked) {
             Update-Output "[$server] Checking enabled repositories as root..."
-            $result = Run-SSHCommand -server $server -command "yum repolist enabled" -execUser "root"
+            $result = Run-SSHCommand -server $server -command "yum repolist enabled" -execUser $execUser
             if ($result -match "ERROR") {
                 Update-Output "[$server] Failed to check repositories: $result" "ERROR"
             }
@@ -595,7 +595,7 @@ function Start-MaintenanceCycle {
         # Step 3: Check Updates (as root)
         if ($chkUpdateCheck.Checked) {
             Update-Output "[$server] Checking for updates as root..."
-            $result = Run-SSHCommand -server $server -command "yum check-update" -execUser "root"
+            $result = Run-SSHCommand -server $server -command "yum check-update" -execUser $execUser
             if ($result -match "ERROR") {
                 Update-Output "[$server] Failed to check updates: $result" "ERROR"
             }
@@ -611,7 +611,7 @@ function Start-MaintenanceCycle {
         # Step 4: Apply Updates (as root)
         if ($chkUpdateApply.Checked) {
             Update-Output "[$server] Applying updates as root..."
-            $result = Run-SSHCommand -server $server -command "yum -y update" -execUser "root"
+            $result = Run-SSHCommand -server $server -command "yum -y update" -execUser $execUser
             if ($result -match "ERROR") {
                 Update-Output "[$server] Failed to apply updates: $result" "ERROR"
             }
@@ -663,43 +663,43 @@ function Start-MaintenanceCycle {
         $currentStep++
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
        
-  # Step 6: Check and start PostgreSQL if needed after reboot
-Update-Output "[$server] Checking if PostgreSQL is running after system reboot..."
-$pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
+        # Step 6: Check and start PostgreSQL if needed after reboot
+        Update-Output "[$server] Checking if PostgreSQL or Enterprisedb is running after system reboot..."
+        $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
 
-if (-not $pgStatus.IsHealthy) {
-    Update-Output "[$server] $pgUser database not running or not responding. Will start using detected data path: $pgDataPath"
-    
-    # If we have a socket error but the process is running, stop it first
-    if ($pgStatus.ProcessRunning -and $pgStatus.SocketError) {
+        if (-not $pgStatus.IsHealthy) {
+        Update-Output "[$server] $pgUser database not running or not responding. Will start using detected data path: $pgDataPath"
+   
+        # If we have a socket error but the process is running, stop it first
+         if ($pgStatus.ProcessRunning -and $pgStatus.SocketError) {
         Update-Output "[$server] Socket error detected. Stopping database before restart..."
         $stopResult = Run-SSHCommand -server $server -command "pg_ctl -D $pgDataPath stop -m fast" -execUser $pgUser
         Update-Output "[$server] Stop result: $stopResult"
         Start-Sleep -Seconds 5
-    }
-    
+        }
+   
     # Start database using the detected user and data path
-    $startCommand = 'nohup pg_ctl -D $PGDATA -l logfile start > /dev/null 2>&1 &'
+    $startCommand = "nohup pg_ctl -D ${pgDataPath} -l logfile start > /dev/null 2>&1 &"
     $startResult = Run-SSHCommand -server $server -command $startCommand -execUser $pgUser
-    
+   
     Update-Output "[$server] Database start initiated with command: $startCommand"
-    Update-Output "[$server] Waiting for database to initialize..."
+    Update-Output "[$server] Waiting for database to start..."
     Start-Sleep -Seconds 10
-    
+   
     # Final verification
     $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
-    
+   
     if ($pgStatus.IsHealthy) {
         Update-Output "[$server] $pgUser database successfully started and responding." "SUCCESS"
     } else {
         Update-Output "[$server] WARNING: $pgUser database failed to start properly." "ERROR"
-        
+       
         # If still having socket issues, try waiting longer
         if ($pgStatus.ProcessRunning -and $pgStatus.SocketError) {
             Update-Output "[$server] Socket still not available. Waiting longer for socket initialization..."
             Start-Sleep -Seconds 15
             $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
-            
+           
             if ($pgStatus.IsHealthy) {
                 Update-Output "[$server] $pgUser database successfully started after extended wait." "SUCCESS"
             } else {
@@ -721,7 +721,7 @@ if (-not $pgStatus.IsHealthy) {
 
 $currentStep++
 $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
-
+       
         # Step 7: Check if barman is running properly (only if barman is available)
         if ($config.HasBarman) {
             $barmanStatus = Check-FixBarman -server $server -barmanUser $config.BarmanUser -barmanName $config.BarmanName
@@ -757,7 +757,7 @@ $saveButton.Add_Click({
     $saveDialog.Filter = "Log Files (*.log)|*.log|Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
     $saveDialog.Title = "Save Log File"
     $saveDialog.FileName = "ServerMaintenance_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-    
+   
     if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $outputBox.Text | Out-File -FilePath $saveDialog.FileName
         $statusLabel.Text = "Log saved to $($saveDialog.FileName)"
