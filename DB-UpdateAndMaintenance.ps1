@@ -679,7 +679,7 @@ if (-not $pgStatus.IsHealthy) {
     }
     
     # Start database using the detected user and data path
-    $startCommand = "nohup pg_ctl -D $pgDataPath -l $pgDataPath/pg_log/startup.log start > /dev/null 2>&1 &"
+    $startCommand = "nohup pg_ctl -D $PGDATA -l logfile start > /dev/null 2>&1 &"
     $startResult = Run-SSHCommand -server $server -command $startCommand -execUser $pgUser
     
     Update-Output "[$server] Database start initiated with command: $startCommand"
@@ -721,6 +721,7 @@ if (-not $pgStatus.IsHealthy) {
 
 $currentStep++
 $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
+
         # Step 7: Check if barman is running properly (only if barman is available)
         if ($config.HasBarman) {
             $barmanStatus = Check-FixBarman -server $server -barmanUser $config.BarmanUser -barmanName $config.BarmanName
