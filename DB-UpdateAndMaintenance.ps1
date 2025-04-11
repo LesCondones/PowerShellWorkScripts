@@ -464,11 +464,13 @@ function Check-PostgreSQL {
     # Check socket connectivity
     $socketCheck = Run-SSHCommand -server $server -command "psql -p $pgPort -c 'SELECT 1'" -execUser $pgUser
     $socketConnected = !($socketCheck -match "ERROR" -or $socketCheck -match "failed")
+    $socketError = ($socketCheck -match "socket.*failed: No such file or directory")
     
     # Return combined status
     return @{
         ProcessRunning = $processRunning
         SocketConnected = $socketConnected
+        SocketError = $socketError
         IsHealthy = ($processRunning -and $socketConnected)
     }
 }
@@ -666,12 +668,19 @@ function Start-MaintenanceCycle {
         $currentStep++
         $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
        
-        # Step 6: Check and start PostgreSQL if needed after reboot
-Update-Output "[$server] Checking if PostgreSQL is running after system reboot..."
+        Update-Output "[$server] Checking if PostgreSQL is running after system reboot..."
 $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
 
 if (-not $pgStatus.IsHealthy) {
     Update-Output "[$server] $pgUser database not running or not responding. Will start using detected data path: $pgDataPath"
+    
+    # If we have a socket error but the process is running, stop it first
+    if ($pgStatus.ProcessRunning -and $pgStatus.SocketError) {
+        Update-Output "[$server] Socket error detected. Stopping database before restart..."
+        $stopResult = Run-SSHCommand -server $server -command "pg_ctl -D $pgDataPath stop -m fast" -execUser $pgUser
+        Update-Output "[$server] Stop result: $stopResult"
+        Start-Sleep -Seconds 5
+    }
     
     # Start database using the detected user and data path
     $startCommand = "nohup pg_ctl -D $pgDataPath -l $pgDataPath/pg_log/startup.log start > /dev/null 2>&1 &"
@@ -688,17 +697,34 @@ if (-not $pgStatus.IsHealthy) {
         Update-Output "[$server] $pgUser database successfully started and responding." "SUCCESS"
     } else {
         Update-Output "[$server] WARNING: $pgUser database failed to start properly." "ERROR"
-        # Check logs for errors
-        $logCheck = Run-SSHCommand -server $server -command "tail -n 20 $pgDataPath/pg_log/startup.log" -execUser $pgUser
-        Update-Output "[$server] Recent database log entries:"
-        Update-Output $logCheck
+        
+        # If still having socket issues, try waiting longer
+        if ($pgStatus.ProcessRunning -and $pgStatus.SocketError) {
+            Update-Output "[$server] Socket still not available. Waiting longer for socket initialization..."
+            Start-Sleep -Seconds 15
+            $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
+            
+            if ($pgStatus.IsHealthy) {
+                Update-Output "[$server] $pgUser database successfully started after extended wait." "SUCCESS"
+            } else {
+                # Check logs for errors
+                $logCheck = Run-SSHCommand -server $server -command "tail -n 20 $pgDataPath/pg_log/startup.log" -execUser $pgUser
+                Update-Output "[$server] Recent database log entries:"
+                Update-Output $logCheck
+            }
+        } else {
+            # Check logs for errors
+            $logCheck = Run-SSHCommand -server $server -command "tail -n 20 $pgDataPath/pg_log/startup.log" -execUser $pgUser
+            Update-Output "[$server] Recent database log entries:"
+            Update-Output $logCheck
+        }
     }
 } else {
     Update-Output "[$server] $pgUser database is already running and accepting connections." "SUCCESS"
 }
 
-        $currentStep++
-        $progressBar.Value = [int](($currentStep / $totalSteps) * 100)
+$currentStep++
+$progressBar.Value = [int](($currentStep / $totalSteps) * 100)
        
         # Step 7: Check if barman is running properly (only if barman is available)
         if ($config.HasBarman) {
