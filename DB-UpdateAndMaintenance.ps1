@@ -20,7 +20,8 @@ $username = Get-Content $usernameListFile
 # Create form with improved styling
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'PostgreSQL/EDB Server Maintenance Utility'
-$form.Size = New-Object System.Drawing.Size(850, 600)
+$form.Size = New-Object System.Drawing.Size(850, 600) # Start size, layout should handle resizing
+$form.MinimumSize = New-Object System.Drawing.Size(600, 450) # Prevent making it too small
 $form.StartPosition = 'CenterScreen'
 $form.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -39,7 +40,7 @@ $titleLabel.Text = "Database Server Maintenance"
 $titleLabel.ForeColor = [System.Drawing.Color]::White
 $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
 $titleLabel.AutoSize = $true
-$titleLabel.Location = New-Object System.Drawing.Point(15, 15)
+$titleLabel.Location = New-Object System.Drawing.Point(15, ($headerPanel.Height - $titleLabel.PreferredHeight) / 2) # Center vertically
 $headerPanel.Controls.Add($titleLabel)
 
 # Create main container
@@ -47,95 +48,113 @@ $mainContainer = New-Object System.Windows.Forms.TableLayoutPanel
 $mainContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
 $mainContainer.RowCount = 2
 $mainContainer.ColumnCount = 2
+# Row 0: Main content area (takes all available space)
 $mainContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-$mainContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50)))
-$mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 25)))
-$mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 75)))
+# Row 1: Bottom controls area (fixed height)
+$mainContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 60))) # Increased height for controls
+# Column 0: Left panel (servers, options)
+$mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 30))) # Adjusted percentage
+# Column 1: Right panel (log, progress, buttons)
+$mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 70))) # Adjusted percentage
 $mainContainer.Padding = New-Object System.Windows.Forms.Padding(10)
+# Add mainContainer AFTER the headerPanel so it doesn't overlap
 $form.Controls.Add($mainContainer)
+$mainContainer.BringToFront() # Ensure it's layered correctly above the form background
 
-# Create server list & controls panel (left side)
+# Create server list & controls panel (left side - Cell 0,0)
 $leftPanel = New-Object System.Windows.Forms.Panel
 $leftPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-$leftPanel.Padding = New-Object System.Windows.Forms.Padding(0, 0, 10, 0)
+$leftPanel.Padding = New-Object System.Windows.Forms.Padding(0, 0, 10, 0) # Padding on the right
+# Place leftPanel in the correct cell
 $mainContainer.Controls.Add($leftPanel, 0, 0)
-$mainContainer.SetRowSpan($leftPanel, 2)
 
 # Server list group
 $serverGroup = New-Object System.Windows.Forms.GroupBox
 $serverGroup.Text = "Servers"
-$serverGroup.Dock = [System.Windows.Forms.DockStyle]::Top
-$serverGroup.Height = 200
+$serverGroup.Dock = [System.Windows.Forms.DockStyle]::Top # Dock to top of leftPanel
+$serverGroup.Height = 200 # Keep fixed height for server list
 $serverGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $leftPanel.Controls.Add($serverGroup)
 
 # Server list box
 $serverListBox = New-Object System.Windows.Forms.CheckedListBox
-$serverListBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+$serverListBox.Dock = [System.Windows.Forms.DockStyle]::Fill # Fill the serverGroup
 $serverListBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $serverListBox.CheckOnClick = $true
-foreach ($server in $servers) {
-    [void]$serverListBox.Items.Add($server, $true)
+$serverListBox.Padding = New-Object System.Windows.Forms.Padding(5) # Add padding inside listbox
+$serverListBox.IntegralHeight = $false # Allows partial lines to show if needed
+if ($null -ne $servers) {
+    foreach ($server in $servers) {
+        [void]$serverListBox.Items.Add($server, $true)
+    }
+} else {
+    [void]$serverListBox.Items.Add("No servers defined", $false)
+    $serverListBox.Enabled = $false
 }
 $serverGroup.Controls.Add($serverListBox)
 
 # Options group
 $optionsGroup = New-Object System.Windows.Forms.GroupBox
 $optionsGroup.Text = "Options"
-$optionsGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
-$optionsGroup.Height = 230
-$optionsGroup.Top = 210
+$optionsGroup.Dock = [System.Windows.Forms.DockStyle]::Fill # Fill remaining space in leftPanel below serverGroup
+# *** REMOVED Height and Top properties - Dock=Fill handles this ***
 $optionsGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $leftPanel.Controls.Add($optionsGroup)
+$optionsGroup.BringToFront() # Ensure it draws correctly after serverGroup
 
-# Options container
-$optionsContainer = New-Object System.Windows.Forms.Panel
+# Options container - Use FlowLayoutPanel for automatic checkbox layout
+$optionsContainer = New-Object System.Windows.Forms.FlowLayoutPanel
 $optionsContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
-$optionsContainer.Padding = New-Object System.Windows.Forms.Padding(10, 15, 10, 10)
+$optionsContainer.Padding = New-Object System.Windows.Forms.Padding(10) # Padding inside the container
+$optionsContainer.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown # Stack checkboxes vertically
+$optionsContainer.WrapContents = $false # Don't wrap horizontally
+$optionsContainer.AutoScroll = $true # Add scrollbar if checkboxes exceed space
 $optionsGroup.Controls.Add($optionsContainer)
 
-# Checkboxes for options
+# Checkboxes for options - Add to FlowLayoutPanel, remove Location, add Margin
+$checkboxMargin = New-Object System.Windows.Forms.Padding(3, 0, 3, 5) # L,T,R,B margin for spacing
+
 $chkRepoCheck = New-Object System.Windows.Forms.CheckBox
 $chkRepoCheck.Text = "Check repositories"
-$chkRepoCheck.Location = New-Object System.Drawing.Point(10, 15)
 $chkRepoCheck.AutoSize = $true
 $chkRepoCheck.Checked = $true
 $chkRepoCheck.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$chkRepoCheck.Margin = $checkboxMargin
 $optionsContainer.Controls.Add($chkRepoCheck)
 
 $chkDbStop = New-Object System.Windows.Forms.CheckBox
 $chkDbStop.Text = "Stop database"
-$chkDbStop.Location = New-Object System.Drawing.Point(10, 40)
 $chkDbStop.AutoSize = $true
 $chkDbStop.Checked = $true
 $chkDbStop.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$chkDbStop.Margin = $checkboxMargin
 $optionsContainer.Controls.Add($chkDbStop)
 
 $chkUpdateCheck = New-Object System.Windows.Forms.CheckBox
 $chkUpdateCheck.Text = "Check for updates"
-$chkUpdateCheck.Location = New-Object System.Drawing.Point(10, 65)
 $chkUpdateCheck.AutoSize = $true
 $chkUpdateCheck.Checked = $true
 $chkUpdateCheck.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$chkUpdateCheck.Margin = $checkboxMargin
 $optionsContainer.Controls.Add($chkUpdateCheck)
 
 $chkUpdateApply = New-Object System.Windows.Forms.CheckBox
 $chkUpdateApply.Text = "Apply updates"
-$chkUpdateApply.Location = New-Object System.Drawing.Point(10, 90)
 $chkUpdateApply.AutoSize = $true
 $chkUpdateApply.Checked = $true
 $chkUpdateApply.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$chkUpdateApply.Margin = $checkboxMargin
 $optionsContainer.Controls.Add($chkUpdateApply)
 
 $chkReboot = New-Object System.Windows.Forms.CheckBox
 $chkReboot.Text = "Reboot servers"
-$chkReboot.Location = New-Object System.Drawing.Point(10, 115)
 $chkReboot.AutoSize = $true
 $chkReboot.Checked = $true
 $chkReboot.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$chkReboot.Margin = $checkboxMargin
 $optionsContainer.Controls.Add($chkReboot)
 
-# Output log panel (right side - top)
+# Output log panel (right side - top - Cell 1,0)
 $logPanel = New-Object System.Windows.Forms.Panel
 $logPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
 $mainContainer.Controls.Add($logPanel, 1, 0)
@@ -145,41 +164,47 @@ $outputGroup = New-Object System.Windows.Forms.GroupBox
 $outputGroup.Text = "Activity Log"
 $outputGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 $outputGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$outputGroup.Padding = New-Object System.Windows.Forms.Padding(5, 3, 5, 5) # Padding around textbox
 $logPanel.Controls.Add($outputGroup)
 
 # Output textbox with rich text
 $outputBox = New-Object System.Windows.Forms.RichTextBox
 $outputBox.Dock = [System.Windows.Forms.DockStyle]::Fill
 $outputBox.Multiline = $true
-$outputBox.ScrollBars = "Vertical"
+$outputBox.ScrollBars = [System.Windows.Forms.RichTextBoxScrollBars]::Vertical # Use Enum
 $outputBox.ReadOnly = $true
 $outputBox.BackColor = [System.Drawing.Color]::White
 $outputBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+$outputBox.HideSelection = $false # Keep text selected even when focus leaves
 $outputGroup.Controls.Add($outputBox)
 
-# Create controls panel (right side - bottom)
+# Create controls panel (right side - bottom - Cell 1,1)
 $controlsPanel = New-Object System.Windows.Forms.Panel
 $controlsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+$controlsPanel.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0) # Add some top padding
 $mainContainer.Controls.Add($controlsPanel, 1, 1)
 
 # Progress bar
 $progressBar = New-Object System.Windows.Forms.ProgressBar
-$progressBar.Location = New-Object System.Drawing.Point(0, 5)
-$progressBar.Size = New-Object System.Drawing.Size(0, 20)
-$progressBar.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Top
+$progressBar.Dock = [System.Windows.Forms.DockStyle]::Top
+$progressBar.Height = 20 # Explicitly set height
 $progressBar.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
 $controlsPanel.Controls.Add($progressBar)
 
-# Button container
+# Button container - Use FlowLayoutPanel for easy button arrangement
 $buttonContainer = New-Object System.Windows.Forms.FlowLayoutPanel
-$buttonContainer.Location = New-Object System.Drawing.Point(0, 30)
-$buttonContainer.Size = New-Object System.Drawing.Size(0, 30)
-$buttonContainer.Anchor = [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
-$buttonContainer.FlowDirection = [System.Windows.Forms.FlowDirection]::RightToLeft
-$buttonContainer.WrapContents = $false
+# *** Dock the button container to fill the rest of the controlsPanel ***
+$buttonContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
+$buttonContainer.FlowDirection = [System.Windows.Forms.FlowDirection]::RightToLeft # Buttons align to the right
+$buttonContainer.WrapContents = $false # Keep buttons on one line
+# Add some padding so buttons aren't flush against progress bar/edges
+$buttonContainer.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0) # T Padding
 $controlsPanel.Controls.Add($buttonContainer)
+$buttonContainer.BringToFront() # Ensure it's drawn over the Panel background below the ProgressBar
 
-# Buttons with improved styling
+# Buttons with improved styling - Add directly to FlowLayoutPanel
+$buttonMargin = New-Object System.Windows.Forms.Padding(5, 0, 0, 0) # L margin for spacing between buttons (since RightToLeft)
+
 $runButton = New-Object System.Windows.Forms.Button
 $runButton.Text = 'Run Maintenance'
 $runButton.Size = New-Object System.Drawing.Size(150, 30)
@@ -187,8 +212,8 @@ $runButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $runButton.BackColor = [System.Drawing.Color]::FromArgb(41, 128, 185)
 $runButton.ForeColor = [System.Drawing.Color]::White
 $runButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$runButton.Margin = New-Object System.Windows.Forms.Padding(5)
-$buttonContainer.Controls.Add($runButton)
+$runButton.Margin = $buttonMargin # Use defined margin
+$buttonContainer.Controls.Add($runButton) # Add directly
 
 $clearButton = New-Object System.Windows.Forms.Button
 $clearButton.Text = 'Clear Log'
@@ -197,8 +222,8 @@ $clearButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $clearButton.BackColor = [System.Drawing.Color]::FromArgb(149, 165, 166)
 $clearButton.ForeColor = [System.Drawing.Color]::White
 $clearButton.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-$clearButton.Margin = New-Object System.Windows.Forms.Padding(5)
-$buttonContainer.Controls.Add($clearButton)
+$clearButton.Margin = $buttonMargin # Use defined margin
+$buttonContainer.Controls.Add($clearButton) # Add directly
 
 $saveButton = New-Object System.Windows.Forms.Button
 $saveButton.Text = 'Save Log'
@@ -207,12 +232,14 @@ $saveButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $saveButton.BackColor = [System.Drawing.Color]::FromArgb(149, 165, 166)
 $saveButton.ForeColor = [System.Drawing.Color]::White
 $saveButton.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-$saveButton.Margin = New-Object System.Windows.Forms.Padding(5)
-$buttonContainer.Controls.Add($saveButton)
+$saveButton.Margin = $buttonMargin # Use defined margin
+$buttonContainer.Controls.Add($saveButton) # Add directly
 
 # Status bar
 $statusStrip = New-Object System.Windows.Forms.StatusStrip
 $statusStrip.BackColor = [System.Drawing.Color]::FromArgb(236, 240, 241)
+# StatusStrip docks bottom by default, but explicit doesn't hurt
+$statusStrip.Dock = [System.Windows.Forms.DockStyle]::Bottom
 $form.Controls.Add($statusStrip)
 
 $statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
