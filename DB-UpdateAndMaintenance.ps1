@@ -42,6 +42,11 @@ $titleLabel.AutoSize = $true
 $titleLabel.Location = New-Object System.Drawing.Point(15, ($headerPanel.Height - $titleLabel.PreferredHeight) / 2) # Center vertically
 $headerPanel.Controls.Add($titleLabel)
 
+#Create a scroll panel to contain main content
+$scrollPanel = New-Object System.Windows.Forms.Panel
+$scrollPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+$scrollPanel.AutoScroll = $true
+
 # Create main container
 $mainContainer = New-Object System.Windows.Forms.TableLayoutPanel
 $mainContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -57,6 +62,7 @@ $mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([Sy
 $mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 70))) # Adjusted percentage
 $mainContainer.Padding = New-Object System.Windows.Forms.Padding(10)
 # Add mainContainer AFTER the headerPanel so it doesn't overlap
+$mainContainer.Controls.Add($scrollPanel, 0, 1)
 $form.Controls.Add($mainContainer)
 $mainContainer.BringToFront() # Ensure it's layered correctly above the form background
 
