@@ -3,7 +3,6 @@
 #Created: 04/09/2025
 #Modified: 04/16/2025 - Added optimizations for high workloads
 
-
 # Load Windows Forms and Drawing assemblies
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -41,7 +40,8 @@ $titleLabel.Text = "Database Server Maintenance"
 $titleLabel.ForeColor = [System.Drawing.Color]::White
 $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
 $titleLabel.AutoSize = $true
-$titleLabel.Location = New-Object System.Drawing.Point(15, ($headerPanel.Height - $titleLabel.PreferredHeight) / 2) # Center vertically
+# Fixed division operator error by using [int] cast
+$titleLabel.Location = New-Object System.Drawing.Point(15, [int](($headerPanel.Height - $titleLabel.PreferredHeight) / 2))
 $headerPanel.Controls.Add($titleLabel)
 
 #Create a scroll panel to contain main content
@@ -67,9 +67,6 @@ $mainContainer.Padding = New-Object System.Windows.Forms.Padding(10)
 $mainContainer.Controls.Add($scrollPanel, 0, 1)
 $form.Controls.Add($mainContainer)
 $mainContainer.BringToFront() # Ensure it's layered correctly above the form background
-
-
-
 
 # Create server list & controls panel (left side - Cell 0,0)
 $leftPanel = New-Object System.Windows.Forms.Panel
@@ -1445,13 +1442,12 @@ function Start-MaintenanceCycle {
                 }
             } -ArgumentList $server, $tasks, $updateTimeout, $parallelEnabled, $script:SyncHash, $username
             
-            # Store job references
+            # Fixed hash table syntax - using semicolons instead of commas
             $script:SyncHash.RunningJobs[$server] = @{
-                Job = $job,
+                Job = $job;
                 Server = $server
             }
         }
-    }
     }
     else {
         # Sequential processing
@@ -1477,9 +1473,9 @@ function Start-MaintenanceCycle {
             }
         } -ArgumentList $selectedServers, $tasks, $updateTimeout, $parallelEnabled, $script:SyncHash
         
-        # Store the job reference
+        # Store the job reference with fixed hashtable syntax
         $script:SyncHash.RunningJobs["Main"] = @{
-            Job = $job
+            Job = $job;
             Servers = $selectedServers
         }
     }
