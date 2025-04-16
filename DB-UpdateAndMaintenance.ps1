@@ -891,95 +891,567 @@ function Start-MaintenanceCycle {
     # Start the output timer
     $outputTimer.Start()
     
-    # Progress tracking
-    $progressThread = [System.Threading.Thread]::new({
-        while ($true) {
-            # Calculate progress based on server status
-            if ($script:SyncHash.ServerStatus.Count -gt 0) {
-                $completedCount = ($script:SyncHash.ServerStatus.Values | Where-Object { $_ -eq "Completed" }).Count
-                $totalCount = $script:SyncHash.ServerStatus.Count
-                
-                if ($totalCount -gt 0) {
-                    $progressPercentage = [int](($completedCount / $totalCount) * 100)
-                    $progressBar.Invoke([Action]{
-                        $progressBar.Value = $progressPercentage
-                    })
-                }
-            }
+    # Progress tracking - Compatible with older PowerShell versions
+    # Create the scriptblock for the timer that will update progress
+    $progressTimer = New-Object System.Windows.Forms.Timer
+    $progressTimer.Interval = 500  # Check every 500ms
+    $progressTimer.Add_Tick({
+        # Calculate progress based on server status
+        if ($script:SyncHash.ServerStatus.Count -gt 0) {
+            $completedCount = ($script:SyncHash.ServerStatus.Values | Where-Object { $_ -eq "Completed" }).Count
+            $totalCount = $script:SyncHash.ServerStatus.Count
             
-            # Check if all servers are done
-            $allDone = $true
-            foreach ($status in $script:SyncHash.ServerStatus.Values) {
-                if ($status -eq "Running") {
-                    $allDone = $false
-                    break
-                }
+            if ($totalCount -gt 0) {
+                $progressPercentage = [int](($completedCount / $totalCount) * 100)
+                $progressBar.Value = $progressPercentage
             }
-            
-            if ($allDone -and $script:SyncHash.ServerStatus.Count -gt 0) {
-                $form.Invoke([Action]{
-                    $runButton.Enabled = $true
-                    $statusLabel.Text = "Maintenance complete"
-                    
-                    # Stop the output timer
-                    $outputTimer.Stop()
-                    
-                    # Final messages
-                    Update-Output "Maintenance cycle completed for all selected servers." "SUCCESS"
-                    
-                    # Cleanup any remaining jobs
-                    foreach ($job in $script:SyncHash.RunningJobs.Values) {
-                        if ($job.Job.State -ne 'Completed') {
-                            Remove-Job -Job $job.Job -Force -ErrorAction SilentlyContinue
-                        }
-                    }
-                    $script:SyncHash.RunningJobs.Clear()
-                })
+        }
+        
+        # Check if all servers are done
+        $allDone = $true
+        foreach ($status in $script:SyncHash.ServerStatus.Values) {
+            if ($status -eq "Running") {
+                $allDone = $false
                 break
             }
+        }
+        
+        if ($allDone -and $script:SyncHash.ServerStatus.Count -gt 0) {
+            $runButton.Enabled = $true
+            $statusLabel.Text = "Maintenance complete"
             
-            Start-Sleep -Milliseconds 500
+            # Stop the timers
+            $outputTimer.Stop()
+            $progressTimer.Stop()
+            
+            # Final messages
+            Update-Output "Maintenance cycle completed for all selected servers." "SUCCESS"
+            
+            # Cleanup any remaining jobs
+            foreach ($job in $script:SyncHash.RunningJobs.Values) {
+                if ($job.Job -ne $null -and $job.Job.State -ne 'Completed') {
+                    Remove-Job -Job $job.Job -Force -ErrorAction SilentlyContinue
+                }
+            }
+            $script:SyncHash.RunningJobs.Clear()
         }
     })
-    $progressThread.IsBackground = $true
-    $progressThread.Start()
+    
+    # Start the progress timer
+    $progressTimer.Start()
 
-    # Process servers
+    # Process servers - using standard PowerShell jobs for compatibility
     if ($parallelEnabled) {
         # Parallel processing
         $throttleLimit = [Math]::Min(5, $selectedServers.Count)  # Process up to 5 servers at once
         Update-Output "Processing up to $throttleLimit servers simultaneously" "INFO"
         
-        # Create runspace pool
-        $runspacePool = [runspacefactory]::CreateRunspacePool(1, $throttleLimit)
-        $runspacePool.Open()
-        
-        # Start jobs for each server
+        # Start jobs for each server using standard PowerShell jobs
         foreach ($server in $selectedServers) {
             $script:SyncHash.ServerStatus[$server] = "Running"
             
-            $powershell = [powershell]::Create().AddScript({
-                param ($server, $tasks, $updateTimeout, $parallelEnabled, $syncHash)
+            # Create a background job for each server
+            $job = Start-Job -ScriptBlock {
+                param($server, $tasks, $updateTimeout, $parallelEnabled, $syncHashTable, $username)
                 
-                # Import the necessary functions from the script
-                . ([scriptblock]::Create($syncHash.Functions))
+                # Create functions in the job scope
+                function Update-Output {
+                    param (
+                        [string]$message,
+                        [string]$type = "INFO",
+                        [string]$server = ""
+                    )
+                   
+                    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    $serverPrefix = if ($server) { "[$server] " } else { "" }
+                    $fullMessage = "[$timestamp] $serverPrefix$message"
+                   
+                    # Add to synchronized queue
+                    $syncHashTable.OutputQueue.Enqueue(@{
+                        Message = $fullMessage
+                        Type = $type
+                    })
+                }
                 
-                # Set the global sync hash in this runspace
-                $script:SyncHash = $syncHash
+                function Run-SSHCommand {
+                    param (
+                        [string]$server,
+                        [string]$command,
+                        [string]$execUser = "root",
+                        [string]$connectAs = $username,
+                        [int]$timeout = 60,
+                        [switch]$getLongOutput
+                    )
+                   
+                    try {
+                        $sshCommand = ""
+                        if ($execUser -eq "root") {
+                            # For root commands, use dzdo directly
+                            $sshCommand = "ssh -o GSSAPIAuthentication=yes -o ConnectTimeout=10 ${connectAs}@${server} `"dzdo su - -c '$command'`""
+                        } else{
+                            $sshCommand = "ssh -o GSSAPIAuthentication=yes -o ConnectTimeout=10 ${connectAs}@${server} `"dzdo su -  $execUser -c '$command'`""
+                        }
+                       
+                        # For long output operations like yum update, use a different approach
+                        if ($getLongOutput) {
+                            # Create a temp file to store output
+                            $tempFile = [System.IO.Path]::GetTempFileName()
+                            
+                            # Start the process and redirect output to temp file
+                            $process = Start-Process -FilePath "powershell" -ArgumentList "-Command", $sshCommand -RedirectStandardOutput $tempFile -NoNewWindow -PassThru
+                            
+                            # Wait for the process with progress updates
+                            $elapsedTime = 0
+                            $interval = 5  # Check every 5 seconds
+                            
+                            while (!$process.HasExited -and $elapsedTime -lt $timeout) {
+                                Start-Sleep -Seconds $interval
+                                $elapsedTime += $interval
+                                
+                                # Get current output progress
+                                try {
+                                    $currentOutput = Get-Content -Path $tempFile -Tail 5 -ErrorAction SilentlyContinue
+                                    if ($currentOutput) {
+                                        $progressLine = $currentOutput | Where-Object { $_ -match 'Running|Processing|Complete|Installing|Updating' } | Select-Object -Last 1
+                                        if ($progressLine) {
+                                            $syncHashTable.OutputQueue.Enqueue(@{
+                                                Type = "PROGRESS"
+                                                Server = $server
+                                                Message = "Progress: $progressLine"
+                                            })
+                                        }
+                                    }
+                                } catch { }
+                                
+                                # Check if operation should be canceled
+                                if ($syncHashTable.CancelOperation) {
+                                    try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch { }
+                                    Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
+                                    return "CANCELED: Operation was canceled by user"
+                                }
+                            }
+                            
+                            # Check if timed out
+                            if (!$process.HasExited) {
+                                try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch { }
+                                Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
+                                return "ERROR: Command execution timed out after $timeout seconds"
+                            }
+                            
+                            # Get the output
+                            $result = Get-Content -Path $tempFile -Raw
+                            Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
+                            return $result
+                        }
+                        else {
+                            # For regular commands, use the job approach
+                            $job = Start-Job -ScriptBlock {
+                                param($cmd)
+                                Invoke-Expression $cmd
+                            } -ArgumentList $sshCommand
+                           
+                            # Wait for the command to complete or timeout
+                            if (Wait-Job $job -Timeout $timeout) {
+                                $result = Receive-Job $job
+                                Remove-Job $job
+                                return $result
+                            } else {
+                                Stop-Job $job
+                                Remove-Job $job
+                                return "ERROR: Command execution timed out after $timeout seconds"
+                            }
+                        }
+                    }
+                    catch {
+                        return "ERROR: $_"
+                    }
+                }
                 
-                # Run the maintenance
-                Start-ServerMaintenance -server $server -tasks $tasks -updateTimeout $updateTimeout -parallelEnabled $parallelEnabled
-            }).AddArgument($server).AddArgument($tasks).AddArgument($updateTimeout).AddArgument($parallelEnabled).AddArgument($script:SyncHash)
+                function Check-PostgreSQL {
+                    param (
+                        [string]$server,
+                        [string]$pgUser,
+                        [string]$pgDataPath,
+                        [string]$pgPort = "5444"
+                    )
+                   
+                    # Check if process is running
+                    $processPattern = if ($pgUser -eq "enterprisedb") { "enterpr+" } else { "postgres" }
+                    $processCheck = Run-SSHCommand -server $server -command "ps -ef | grep -E $processPattern | grep -v grep" -execUser $pgUser
+                    $processRunning = ($processCheck -match "postgres")
+                   
+                    # Check socket connectivity using pg_isready
+                    $readyCheck = Run-SSHCommand -server $server -command "pg_isready -p $pgPort 2>&1 || echo 'Not ready'" -execUser $pgUser
+                    $isReady = ($readyCheck -match "accepting connections")
+                   
+                    # Also test with psql for comprehensive testing
+                    $socketCheck = Run-SSHCommand -server $server -command "psql -p $pgPort -c 'SELECT 1' 2>&1 || echo 'Connection failed'" -execUser $pgUser
+                    $socketConnected = !($socketCheck -match "Connection failed" -or $socketCheck -match "failed" -or $socketCheck -match "ERROR")
+                    $socketError = ($socketCheck -match "socket.*failed: No such file or directory")
+                   
+                    # Return combined status
+                    return @{
+                        ProcessRunning = $processRunning
+                        SocketConnected = $socketConnected
+                        SocketError = $socketError
+                        IsHealthy = ($processRunning -and $socketConnected)
+                    }
+                }
+                
+                function Detect-ServerConfig {
+                    param (
+                        [string]$server
+                    )
+                   
+                    Update-Output "Detecting server configuration..." -server $server
+                   
+                    # First check which database user exists: enterprisedb or postgres
+                    $entDbCheck = Run-SSHCommand -server $server -command "id -u enterprisedb 2>/dev/null || echo 'Not found'" -execUser "enterprisedb"
+                    $pgCheck = Run-SSHCommand -server $server -command "id -u postgres 2>/dev/null || echo 'Not found'" -execUser "postgres"
+                   
+                    $pgUser = ""
+                    if ($entDbCheck -ne "Not found" -and $entDbCheck -notmatch "ERROR") {
+                        $pgUser = "enterprisedb"
+                        Update-Output "Detected enterprisedb user" "SUCCESS" -server $server
+                    } elseif ($pgCheck -ne "Not found" -and $pgCheck -notmatch "ERROR") {
+                        $pgUser = "postgres"
+                        Update-Output "Detected postgres user" "SUCCESS" -server $server
+                    } else {
+                        Update-Output "ERROR: Could not detect database user (neither enterprisedb nor postgres found)" "ERROR" -server $server
+                        return $null
+                    }
+                   
+                    # Paths to check for EDB installs
+                    $edbPaths = @(
+                        "/edbas/entdb/edb-5444"
+                    )
+                   
+                    # Paths to check for PostgreSQL installs
+                    $pgPaths = @(
+                        "/pgsql/pgdbs/pg-5444"
+                    )
+                   
+                    # Select paths to check based on detected user
+                    $pathsToCheck = if ($pgUser -eq "enterprisedb") { $edbPaths } else { $pgPaths }
+                    $pgDataPath = ""
+                   
+                    # Check each potential path
+                    foreach ($path in $pathsToCheck) {
+                        $pathCheck = Run-SSHCommand -server $server -command "test -d $path && echo 'Found' || echo 'Not found'" -execUser $pgUser
+                        if ($pathCheck -eq "Found") {
+                            $pgDataPath = $path
+                            Update-Output "Found database path: $pgDataPath" "SUCCESS" -server $server
+                            break
+                        }
+                    }
+                   
+                    # If no path was found, try to check environment variable
+                    if ([string]::IsNullOrEmpty($pgDataPath)) {
+                        $envCheck = Run-SSHCommand -server $server -command "echo \$PGDATA" -execUser $pgUser
+                        if (-not [string]::IsNullOrEmpty($envCheck) -and $envCheck -ne '$PGDATA' -and $envCheck -notmatch "ERROR") {
+                            $pgDataPath = $envCheck.Trim()
+                            Update-Output "Found database path from PGDATA environment variable: $pgDataPath" "SUCCESS" -server $server
+                        }
+                    }
+                   
+                    # If still no path, check postmaster.pid locations
+                    if ([string]::IsNullOrEmpty($pgDataPath)) {
+                        $pidCheck = Run-SSHCommand -server $server -command "find / -name postmaster.pid -path '*/data/*' 2>/dev/null | head -1" -execUser "root"
+                        if (-not [string]::IsNullOrEmpty($pidCheck) -and $pidCheck -notmatch "ERROR") {
+                            $pgDataPath = $pidCheck.Trim() -replace "/postmaster.pid", ""
+                            Update-Output "Found database path from postmaster.pid: $pgDataPath" "SUCCESS" -server $server
+                        }
+                    }
+                   
+                    # Check if barman is available
+                    $barmanCheck = Run-SSHCommand -server $server -command "id -u barman 2>/dev/null || echo 'Not found'" -execUser "barman"
+                    $hasBarman = ($barmanCheck -ne "Not found" -and $barmanCheck -notmatch "ERROR")
+                   
+                    # Determine barman database name
+                    $barmanName = ""
+                    $barmanUser = ""
+                    if ($hasBarman) {
+                        $barmanUser = "barman"
+                       
+                        # Check what barman servers are configured
+                        $barmanServers = Run-SSHCommand -server $server -command "barman list-server 2>/dev/null || echo 'Not configured'" -execUser $barmanUser
+                       
+                        if ($barmanServers -notmatch "Not configured" -and $barmanServers -notmatch "ERROR") {
+                            # Use first available barman server
+                            $barmanName = ($barmanServers -split '\n')[0].Trim()
+                            Update-Output "Found barman configuration for: $barmanName" "SUCCESS" -server $server
+                        } else {
+                            # Guess based on user type
+                            if ($pgUser -eq "enterprisedb") {
+                                $barmanName = "edb-5444"
+                            } else {
+                                $barmanName = "pg-5444"
+                            }
+                           
+                            # Check if this guess is valid
+                            $barmanConfigCheck = Run-SSHCommand -server $server -command "barman show-server $barmanName 2>/dev/null || echo 'Not configured'" -execUser $barmanUser
+                            if ($barmanConfigCheck -match "Not configured" -or $barmanConfigCheck -match "ERROR") {
+                                $hasBarman = $false
+                                Update-Output "Barman is installed but $barmanName is not configured" "WARNING" -server $server
+                            } else {
+                                Update-Output "Found barman configuration for: $barmanName" "SUCCESS" -server $server
+                            }
+                        }
+                    }
+                   
+                    # Return the configuration
+                    if ([string]::IsNullOrEmpty($pgDataPath)) {
+                        Update-Output "WARNING: Could not detect database data path" "WARNING" -server $server
+                        return $null
+                    }
+                   
+                    Update-Output "Configuration detected successfully" "SUCCESS" -server $server
+                   
+                    return @{
+                        PgUser = $pgUser
+                        PgDataPath = $pgDataPath
+                        HasBarman = $hasBarman
+                        BarmanUser = $barmanUser
+                        BarmanName = $barmanName
+                    }
+                }
+                
+                function Check-FixBarman {
+                    param (
+                        [string]$server,
+                        [string]$barmanUser,
+                        [string]$barmanName = "edb-5444"
+                    )
+                   
+                    Update-Output "Checking barman status..." -server $server
+                    $result = Run-SSHCommand -server $server -command "barman check $barmanName" -execUser "barman" -timeout 120
+                   
+                    # Check for replication slot missing error and fix
+                    if ($result -match "replication slot .* doesn't exist") {
+                        Update-Output "Replication slot missing. Creating slot..." "WARNING" -server $server
+                        $createSlotResult = Run-SSHCommand -server $server -command "barman receive-wal --create-slot $barmanName" -execUser "barman" -timeout 120
+                        Update-Output "Create slot result: $createSlotResult" -server $server
+                        Start-Sleep -Seconds 5
+                    }
+                   
+                    # Check for receive-wal not running error and fix
+                    if ($result -match "receive-wal running: FAILED") {
+                        Update-Output "WAL receiver not running. Starting WAL receiver..." "WARNING" -server $server
+                        $receiveWalResult = Run-SSHCommand -server $server -command "barman receive-wal $barmanName &" -execUser "barman" -timeout 120
+                        Update-Output "Start WAL receiver result: $receiveWalResult" -server $server
+                        Start-Sleep -Seconds 5
+                    }
+                   
+                    # Final verification
+                    Update-Output "Performing final barman check..." -server $server
+                    $finalCheck = Run-SSHCommand -server $server -command "barman check $barmanName" -execUser "barman" -timeout 120
+                   
+                    # Log the detailed results for troubleshooting
+                    Update-Output "Barman status details:" -server $server
+                    Update-Output $finalCheck -server $server
+                   
+                    if ($finalCheck -match "FAILED") {
+                        Update-Output "WARNING: Some barman checks still failing after fixes." "WARNING" -server $server
+                        return $false
+                    } else {
+                        Update-Output "All barman checks passed successfully." "SUCCESS" -server $server
+                        return $true
+                    }
+                }
+                
+                # Main maintenance logic for server
+                try {
+                    # Initialize server status
+                    $syncHashTable.ServerStatus[$server] = "Running"
+                    
+                    # Detect server configuration
+                    $config = Detect-ServerConfig -server $server
+                    
+                    if ($config -eq $null) {
+                        Update-Output "ERROR: Failed to detect server configuration, skipping server" "ERROR" -server $server
+                        $syncHashTable.ServerStatus[$server] = "Failed"
+                        return
+                    }
+                    
+                    $pgUser = $config.PgUser
+                    $pgDataPath = $config.PgDataPath
+                    $pgPort = "5444"  # Assuming standard port for all servers
+                    
+                    # Step 1: Check Repositories (explicitly as root)
+                    if ($tasks -contains "Check repositories") {
+                        Update-Output "Checking enabled repositories as root..." -server $server
+                        $result = Run-SSHCommand -server $server -command "yum repolist enabled" -execUser "root" -timeout 120
+                        if ($result -match "ERROR") {
+                            Update-Output "Failed to check repositories: $result" "ERROR" -server $server
+                        }
+                        else {
+                            Update-Output "Repository check complete." "SUCCESS" -server $server
+                        }
+                    }
+                    
+                    # Step 2: Shutdown Database
+                    if ($tasks -contains "Stop database") {
+                        Update-Output "Shutting down PostgreSQL database as $pgUser..." -server $server
+                        $result = Run-SSHCommand -server $server -command "pg_ctl -D $pgDataPath stop -m fast" -execUser $pgUser -timeout 120
+                        if ($result -match "ERROR" -or $result -match "failed") {
+                            Update-Output "Failed to stop database: $result" "ERROR" -server $server
+                        }
+                        else {
+                            Update-Output "PostgreSQL database stopped successfully." "SUCCESS" -server $server
+                        }
+                    }
+                    
+                    # Step 3: Check Updates (as root)
+                    if ($tasks -contains "Check for updates") {
+                        Update-Output "Checking for updates as root..." -server $server
+                        $result = Run-SSHCommand -server $server -command "yum check-update" -execUser "root" -timeout 180
+                        if ($result -match "ERROR") {
+                            Update-Output "Failed to check updates: $result" "ERROR" -server $server
+                        }
+                        else {
+                            Update-Output "Update check complete." "SUCCESS" -server $server
+                        }
+                    }
+                    
+                    # Step 4: Apply Updates (as root) - with extended timeout and progress reporting
+                    if ($tasks -contains "Apply updates") {
+                        Update-Output "Applying updates as root..." -server $server
+                        
+                        # Using a much longer timeout and getting progress output
+                        $timeoutSeconds = $updateTimeout * 60
+                        Update-Output "Using extended timeout of $updateTimeout minutes for updates" -server $server
+                        
+                        # Execute with progress monitoring
+                        $result = Run-SSHCommand -server $server -command "yum -y update" -execUser "root" -timeout $timeoutSeconds -getLongOutput
+                        
+                        if ($result -match "ERROR" -or $result -match "CANCELED") {
+                            if ($result -match "CANCELED") {
+                                Update-Output "Update operation was canceled by user" "WARNING" -server $server
+                            } else {
+                                Update-Output "Failed to apply updates: $result" "ERROR" -server $server
+                            }
+                        }
+                        else {
+                            Update-Output "Updates applied successfully." "SUCCESS" -server $server
+                        }
+                    }
+                    
+                    # Step 5: Reboot server as root
+                    if ($tasks -contains "Reboot servers") {
+                        Update-Output "Rebooting server..." -server $server
+                        $result = Run-SSHCommand -server $server -command "init 6" -execUser "root" -timeout 10
+                        Update-Output "Reboot command sent. Waiting for server to come back online..." -server $server
             
-            $powershell.RunspacePool = $runspacePool
+                        # Wait for server to reboot
+                        $timeout = 300 # 5 minutes timeout
+                        $timer = [Diagnostics.Stopwatch]::StartNew()
+                        $isOnline = $false
             
-            $asyncResult = $powershell.BeginInvoke()
+                        while (-not $isOnline -and $timer.Elapsed.TotalSeconds -lt $timeout) {
+                            Start-Sleep -Seconds 15
+                            try {
+                                $pingTest = Test-Connection -ComputerName $server -Count 1 -Quiet
+                                if ($pingTest) {
+                                    # Additional wait for SSH to become available
+                                    Start-Sleep -Seconds 30
+                                    $isOnline = $true
+                                }
+                            }
+                            catch {
+                                # Continue waiting
+                            }
+                            
+                            # Add progress updates every 15 seconds
+                            Update-Output "Waiting for server to come back online... ($([int]$timer.Elapsed.TotalSeconds) seconds)" -server $server
+                        }
+            
+                        if (-not $isOnline) {
+                            Update-Output "WARNING: Server did not come back online within timeout period" "WARNING" -server $server
+                        }
+                        else {
+                            Update-Output "Server is back online" "SUCCESS" -server $server
+                        }
+                    }
+                    
+                    # Step 6: Check and start PostgreSQL if needed after reboot
+                    Update-Output "Checking if PostgreSQL or Enterprisedb is running after system reboot..." -server $server
+                    
+                    # Additional wait after reboot to ensure services have time to start
+                    Start-Sleep -Seconds 15
+                    
+                    $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
+            
+                    if (-not $pgStatus.IsHealthy) {
+                        Update-Output "$pgUser database not running or not responding. Will start using detected data path: $pgDataPath" -server $server
+               
+                        # If we have a socket error but the process is running, stop it first
+                        if ($pgStatus.ProcessRunning -and $pgStatus.SocketError) {
+                            Update-Output "Socket error detected. Stopping database before restart..." -server $server
+                            $stopResult = Run-SSHCommand -server $server -command "pg_ctl -D $pgDataPath stop -m fast" -execUser $pgUser -timeout 120
+                            Update-Output "Stop result: $stopResult" -server $server
+                            Start-Sleep -Seconds 5
+                        }
+               
+                        # Start database using the detected user and data path with improved command
+                        $startCommand = "nohup pg_ctl -D ${pgDataPath} -l ${pgDataPath}/pg_log/startup.log start > /dev/null 2>&1 &"
+                        $startResult = Run-SSHCommand -server $server -command $startCommand -execUser $pgUser -timeout 120
+               
+                        Update-Output "Database start initiated with command: $startCommand" -server $server
+                        Update-Output "Waiting for database to start..." -server $server
+                        
+                        # Progressive waiting for database startup
+                        for ($i = 1; $i -le 6; $i++) {
+                            Start-Sleep -Seconds 5
+                            
+                            # Check status
+                            $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
+                            
+                            if ($pgStatus.IsHealthy) {
+                                Update-Output "$pgUser database successfully started and responding." "SUCCESS" -server $server
+                                break
+                            } else {
+                                Update-Output "Still waiting for database to start (attempt $i)..." -server $server
+                            }
+                        }
+                        
+                        # Final status check
+                        if (-not $pgStatus.IsHealthy) {
+                            Update-Output "WARNING: $pgUser database failed to start properly." "ERROR" -server $server
+                            
+                            # Check logs for errors
+                            $logCheck = Run-SSHCommand -server $server -command "tail -n 20 $pgDataPath/pg_log/startup.log" -execUser $pgUser -timeout 60
+                            Update-Output "Recent database log entries:" -server $server
+                            Update-Output $logCheck -server $server
+                        }
+                    } else {
+                        Update-Output "$pgUser database is already running and accepting connections." "SUCCESS" -server $server
+                    }
+                    
+                    # Step 7: Check if barman is running properly (only if barman is available)
+                    if ($config.HasBarman) {
+                        $barmanStatus = Check-FixBarman -server $server -barmanUser $config.BarmanUser -barmanName $config.BarmanName
+                        Update-Output "Barman check complete." "INFO" -server $server
+                    } else {
+                        Update-Output "Barman not configured on this server, skipping barman check." "INFO" -server $server
+                    }
+                    
+                    # Mark server as completed
+                    $syncHashTable.ServerStatus[$server] = "Completed"
+                    Update-Output "All maintenance tasks completed successfully." "SUCCESS" -server $server
+                }
+                catch {
+                    Update-Output "ERROR: Unhandled exception during maintenance: $_" "ERROR" -server $server
+                    $syncHashTable.ServerStatus[$server] = "Failed"
+                }
+            } -ArgumentList $server, $tasks, $updateTimeout, $parallelEnabled, $script:SyncHash, $username
+            
+            # Store job references
             $script:SyncHash.RunningJobs[$server] = @{
-                PowerShell = $powershell
-                AsyncResult = $asyncResult
-                Job = $null
+                Job = $job,
+                Server = $server
             }
         }
+    }
     }
     else {
         # Sequential processing
@@ -1235,6 +1707,15 @@ $form.Add_FormClosing({
         $outputTimer.Dispose()
     }
 })
+
+# Create version info
+$versionLabel = New-Object System.Windows.Forms.Label
+$versionLabel.Text = "v1.1.0 - Compatible with PowerShell 3.0+"
+$versionLabel.ForeColor = [System.Drawing.Color]::White
+$versionLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$versionLabel.AutoSize = $true
+$versionLabel.Location = New-Object System.Drawing.Point(($headerPanel.Width - 210), ($headerPanel.Height - 25))
+$headerPanel.Controls.Add($versionLabel)
 
 # Initialize UI
 Update-Output "PostgreSQL/EDB Server Maintenance Utility started" "INFO"
