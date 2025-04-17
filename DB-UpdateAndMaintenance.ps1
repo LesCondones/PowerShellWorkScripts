@@ -1,6 +1,7 @@
 # Author: Lester Artis Jr.
 # Created: 04/09/2025
 # Modified: 04/16/2025 - Performance improvements
+# Debug fixes added: 04/17/2025
 
 # Load Windows Forms and Drawing assemblies
 Add-Type -AssemblyName System.Windows.Forms
@@ -22,8 +23,8 @@ $global:serverConfigs = @{}
 # Create form with improved styling
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'PostgreSQL/EDB Server Maintenance Utility'
-$form.Size = New-Object System.Drawing.Size(850, 600)
-$form.MinimumSize = New-Object System.Drawing.Size(600, 450)
+$form.Size = New-Object System.Drawing.Size(900, 650) # INCREASED SIZE
+$form.MinimumSize = New-Object System.Drawing.Size(800, 600) # INCREASED MINIMUM SIZE
 $form.StartPosition = 'CenterScreen'
 $form.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
@@ -45,11 +46,6 @@ $titleLabel.AutoSize = $true
 $titleLabel.Location = New-Object System.Drawing.Point(15, ($headerPanel.Height - $titleLabel.PreferredHeight) / 2)
 $headerPanel.Controls.Add($titleLabel)
 
-#Create a scroll panel to contain main content
-$scrollPanel = New-Object System.Windows.Forms.Panel
-$scrollPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
-$scrollPanel.AutoScroll = $true
-
 # Create main container
 $mainContainer = New-Object System.Windows.Forms.TableLayoutPanel
 $mainContainer.Dock = [System.Windows.Forms.DockStyle]::Fill
@@ -57,10 +53,10 @@ $mainContainer.RowCount = 2
 $mainContainer.ColumnCount = 2
 $mainContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 $mainContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 60)))
-$mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 30)))
-$mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 70)))
+# ADJUSTED COLUMN WIDTHS - Give more space to the left panel
+$mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 35)))
+$mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 65)))
 $mainContainer.Padding = New-Object System.Windows.Forms.Padding(10)
-$mainContainer.Controls.Add($scrollPanel, 0, 1)
 $form.Controls.Add($mainContainer)
 $mainContainer.BringToFront()
 
@@ -70,13 +66,22 @@ $leftPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
 $leftPanel.Padding = New-Object System.Windows.Forms.Padding(0, 0, 10, 0)
 $mainContainer.Controls.Add($leftPanel, 0, 0)
 
+# Create a TableLayoutPanel for better control of the left side layout
+$leftTableLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$leftTableLayout.Dock = [System.Windows.Forms.DockStyle]::Fill
+$leftTableLayout.RowCount = 2
+$leftTableLayout.ColumnCount = 1
+# Server list takes 40% of space, options take 60%
+$leftTableLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 40)))
+$leftTableLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 60)))
+$leftPanel.Controls.Add($leftTableLayout)
+
 # Server list group
 $serverGroup = New-Object System.Windows.Forms.GroupBox
 $serverGroup.Text = "Servers"
-$serverGroup.Dock = [System.Windows.Forms.DockStyle]::Top
-$serverGroup.Height = 200
+$serverGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 $serverGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$leftPanel.Controls.Add($serverGroup)
+$leftTableLayout.Controls.Add($serverGroup, 0, 0)
 
 # Server list box
 $serverListBox = New-Object System.Windows.Forms.CheckedListBox
@@ -95,13 +100,12 @@ if ($null -ne $servers) {
 }
 $serverGroup.Controls.Add($serverListBox)
 
-# Options group
+# Options group - Now placed in the second row of the left table layout
 $optionsGroup = New-Object System.Windows.Forms.GroupBox
 $optionsGroup.Text = "Options"
 $optionsGroup.Dock = [System.Windows.Forms.DockStyle]::Fill
 $optionsGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$leftPanel.Controls.Add($optionsGroup)
-$optionsGroup.BringToFront()
+$leftTableLayout.Controls.Add($optionsGroup, 0, 1)
 
 # Options container
 $optionsContainer = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -113,7 +117,7 @@ $optionsContainer.AutoScroll = $true
 $optionsGroup.Controls.Add($optionsContainer)
 
 # Checkboxes for options
-$checkboxMargin = New-Object System.Windows.Forms.Padding(3, 0, 3, 5)
+$checkboxMargin = New-Object System.Windows.Forms.Padding(3, 0, 3, 10) # Increased vertical spacing
 
 $chkRepoCheck = New-Object System.Windows.Forms.CheckBox
 $chkRepoCheck.Text = "Check repositories"
@@ -183,7 +187,9 @@ $numParallelServers.Minimum = 1
 $numParallelServers.Maximum = 10
 $numParallelServers.Value = 3  # Default to 3 parallel servers
 $numParallelServers.Width = 50
-$numParallelServers.Location = New-Object System.Drawing.Point($parallelLabel.Width + 5, 2)
+# FIX: Use GetPreferredSize to get proper width for label
+$parallelLabelWidth = $parallelLabel.PreferredWidth
+$numParallelServers.Location = New-Object System.Drawing.Point(($parallelLabelWidth + 5), 2)
 $parallelContainer.Controls.Add($numParallelServers)
 
 # Output log panel (right side - top - Cell 1,0)
@@ -322,7 +328,7 @@ function Run-SSHCommand {
     }
 }
 
-# Function to update output with color coding - IMPROVED
+# Function to update output with color coding - IMPROVED with handle check
 function Update-Output {
     param (
         [string]$message,
@@ -339,38 +345,54 @@ function Update-Output {
         Message = $fullMessage
         Type = $type
     })
-    
+   
     # Only update UI every 500ms or if forced
     $now = [DateTime]::Now
     if ($force -or ($now - $global:lastUIUpdate).TotalMilliseconds -gt 500) {
-        if($form.IsHandleCreated){
-        $form.Invoke([Action]{
+        # FIX: Check if form handle is created before invoking
+        if ($form.IsHandleCreated) {
+            try {
+                $form.Invoke([System.Action]{
+                    foreach ($entry in $global:logBuffer) {
+                        # Set color based on message type
+                        switch ($entry.Type) {
+                            "SUCCESS" { $color = [System.Drawing.Color]::FromArgb(39, 174, 96) }
+                            "WARNING" { $color = [System.Drawing.Color]::FromArgb(211, 84, 0) }
+                            "ERROR"   { $color = [System.Drawing.Color]::FromArgb(192, 57, 43) }
+                            default   { $color = [System.Drawing.Color]::FromArgb(44, 62, 80) }
+                        }
+                       
+                        # Add colored text
+                        $outputBox.SelectionStart = $outputBox.TextLength
+                        $outputBox.SelectionLength = 0
+                        $outputBox.SelectionColor = $color
+                        $outputBox.AppendText("$($entry.Message)`n")
+                    }
+                   
+                    # Scroll to end and update status
+                    $outputBox.ScrollToCaret()
+                    if ($global:logBuffer.Count -gt 0) {
+                        $statusLabel.Text = $global:logBuffer[$global:logBuffer.Count - 1].Message
+                    }
+                   
+                    # Clear buffer
+                    $global:logBuffer.Clear()
+                    $global:lastUIUpdate = $now
+                })
+            }
+            catch {
+                # Write to console if UI update fails
+                Write-Host "Error updating UI: $_"
+            }
+        }
+        else {
+            # If form handle isn't created, just write to console
             foreach ($entry in $global:logBuffer) {
-                # Set color based on message type
-                switch ($entry.Type) {
-                    "SUCCESS" { $color = [System.Drawing.Color]::FromArgb(39, 174, 96) }
-                    "WARNING" { $color = [System.Drawing.Color]::FromArgb(211, 84, 0) }
-                    "ERROR"   { $color = [System.Drawing.Color]::FromArgb(192, 57, 43) }
-                    default   { $color = [System.Drawing.Color]::FromArgb(44, 62, 80) }
-                }
-               
-                # Add colored text
-                $outputBox.SelectionStart = $outputBox.TextLength
-                $outputBox.SelectionLength = 0
-                $outputBox.SelectionColor = $color
-                $outputBox.AppendText("$($entry.Message)`n")
+                Write-Host $entry.Message
             }
-            
-            # Scroll to end and update status
-            $outputBox.ScrollToCaret()
-            if ($global:logBuffer.Count -gt 0) {
-                $statusLabel.Text = $global:logBuffer[$global:logBuffer.Count - 1].Message
-            }
-            
-            # Clear buffer
             $global:logBuffer.Clear()
             $global:lastUIUpdate = $now
-        })
+        }
     }
 }
 
@@ -379,7 +401,7 @@ function Detect-ServerConfig {
     param (
         [string]$server
     )
-    
+   
     # Check cache first
     if ($global:serverConfigs.ContainsKey($server)) {
         Update-Output "[$server] Using cached server configuration" -server $server
@@ -497,10 +519,10 @@ function Detect-ServerConfig {
         BarmanUser = $barmanUser
         BarmanName = $barmanName
     }
-    
+   
     # Cache the configuration
     $global:serverConfigs[$server] = $config
-    
+   
     return $config
 }
 
@@ -525,7 +547,7 @@ function Check-PostgreSQL {
     # Only test with psql if the process is running but not ready
     $socketConnected = $isReady
     $socketError = $false
-    
+   
     if ($processRunning -and -not $isReady) {
         $socketCheck = Run-SSHCommand -server $server -command "psql -p $pgPort -c 'SELECT 1' 2>&1 || echo 'Connection failed'" -execUser $pgUser
         $socketConnected = !($socketCheck -match "Connection failed" -or $socketCheck -match "failed" -or $socketCheck -match "ERROR")
@@ -553,7 +575,7 @@ function Check-FixBarman {
     $result = Run-SSHCommand -server $server -command "barman check $barmanName" -execUser $barmanUser
    
     $needsRecheck = $false
-    
+   
     # Check for replication slot missing error and fix
     if ($result -match "replication slot .* doesn't exist") {
         Update-Output "Replication slot missing. Creating slot..." -server $server -type "WARNING"
@@ -574,10 +596,10 @@ function Check-FixBarman {
     # Final verification
     if ($needsRecheck) {
         Start-Sleep -Seconds 3  # Reduced wait time
-        
+       
         Update-Output "Performing final barman check..." -server $server
         $finalCheck = Run-SSHCommand -server $server -command "barman check $barmanName" -execUser $barmanUser
-        
+       
         # Log only the failed checks for efficiency
         $failedChecks = $finalCheck -split '\n' | Where-Object { $_ -match 'FAILED' }
         if ($failedChecks) {
@@ -586,7 +608,7 @@ function Check-FixBarman {
                 Update-Output $check -server $server
             }
         }
-        
+       
         if ($finalCheck -match "FAILED") {
             Update-Output "WARNING: Some barman checks still failing after fixes." -server $server -type "WARNING"
             return $false
@@ -609,18 +631,18 @@ function Invoke-ServerMaintenance {
         [int]$serverIndex,
         [int]$totalServers
     )
-    
+   
     $global:serverStatus[$server] = @{
         Status = "Running"
         Progress = 0
         CurrentStep = "Initializing"
     }
-    
+   
     try {
         # Detect server configuration
         Update-Output "Starting maintenance..." -server $server
         $config = Detect-ServerConfig -server $server
-        
+       
         if ($config -eq $null) {
             Update-Output "ERROR: Failed to detect server configuration, skipping server" -server $server -type "ERROR"
             $global:serverStatus[$server] = @{
@@ -630,11 +652,11 @@ function Invoke-ServerMaintenance {
             }
             return
         }
-        
+       
         $pgUser = $config.PgUser
         $pgDataPath = $config.PgDataPath
         $pgPort = "5444"  # Assuming standard port for all servers
-        
+       
         $totalSteps = 0
         if ($options.RepoCheck) { $totalSteps++ }
         if ($options.DbStop) { $totalSteps++ }
@@ -642,9 +664,9 @@ function Invoke-ServerMaintenance {
         if ($options.UpdateApply) { $totalSteps++ }
         if ($options.Reboot) { $totalSteps++ }
         $totalSteps += 2  # For DB restart and barman check
-        
+       
         $currentStep = 0
-        
+       
         # Step 1: Check Repositories
         if ($options.RepoCheck) {
             $global:serverStatus[$server].CurrentStep = "Checking repositories"
@@ -659,7 +681,7 @@ function Invoke-ServerMaintenance {
             $currentStep++
             $global:serverStatus[$server].Progress = [int](($currentStep / $totalSteps) * 100)
         }
-        
+       
         # Step 2: Shutdown Database
         if ($options.DbStop) {
             $global:serverStatus[$server].CurrentStep = "Stopping database"
@@ -674,7 +696,7 @@ function Invoke-ServerMaintenance {
             $currentStep++
             $global:serverStatus[$server].Progress = [int](($currentStep / $totalSteps) * 100)
         }
-        
+       
         # Step 3: Check Updates
         if ($options.UpdateCheck) {
             $global:serverStatus[$server].CurrentStep = "Checking for updates"
@@ -689,15 +711,15 @@ function Invoke-ServerMaintenance {
             $currentStep++
             $global:serverStatus[$server].Progress = [int](($currentStep / $totalSteps) * 100)
         }
-        
+       
         # Step 4: Apply Updates - SIGNIFICANTLY IMPROVED TIMEOUT
         if ($options.UpdateApply) {
             $global:serverStatus[$server].CurrentStep = "Applying updates"
             Update-Output "Applying updates as root (this may take several minutes)..." -server $server
-            
+           
             # Use a much higher timeout for updates - 20 minutes
             $result = Run-SSHCommand -server $server -command "yum -y update" -execUser "root" -timeout 1200
-            
+           
             if ($result -match "ERROR") {
                 Update-Output "Failed to apply updates: $result" -server $server -type "ERROR"
             }
@@ -707,7 +729,7 @@ function Invoke-ServerMaintenance {
             $currentStep++
             $global:serverStatus[$server].Progress = [int](($currentStep / $totalSteps) * 100)
         }
-        
+       
         # Step 5: Reboot server
         if ($options.Reboot) {
             $global:serverStatus[$server].CurrentStep = "Rebooting server"
@@ -739,7 +761,7 @@ function Invoke-ServerMaintenance {
                 catch {
                     # Continue waiting
                 }
-                
+               
                 $elapsed = [int]$timer.Elapsed.TotalSeconds
                 $global:serverStatus[$server].CurrentStep = "Waiting for reboot ($elapsed sec)"
                 Update-Output "Waiting for server to come back online... ($elapsed seconds)" -server $server
@@ -756,7 +778,7 @@ function Invoke-ServerMaintenance {
             $currentStep++
             $global:serverStatus[$server].Progress = [int](($currentStep / $totalSteps) * 100)
         }
-        
+       
         # Step 6: Check and start PostgreSQL if needed
         $global:serverStatus[$server].CurrentStep = "Checking database status"
         Update-Output "Checking if PostgreSQL or Enterprisedb is running..." -server $server
@@ -779,12 +801,12 @@ function Invoke-ServerMaintenance {
    
             Update-Output "Database start initiated with command: $startCommand" -server $server
             Update-Output "Waiting for database to start..." -server $server
-            
+           
             # Wait for database to start with a timeout
             $dbTimeout = 60
             $dbTimer = [Diagnostics.Stopwatch]::StartNew()
             $dbStarted = $false
-            
+           
             while (-not $dbStarted -and $dbTimer.Elapsed.TotalSeconds -lt $dbTimeout) {
                 Start-Sleep -Seconds 5
                 $pgStatus = Check-PostgreSQL -server $server -pgUser $pgUser -pgDataPath $pgDataPath -pgPort $pgPort
@@ -802,7 +824,7 @@ function Invoke-ServerMaintenance {
                 # If still having socket issues, try waiting longer
                 if ($pgStatus.ProcessRunning -and $pgStatus.SocketError) {
                     Update-Output "Socket still not available. Checking logs..." -server $server
-                    
+                   
                     # Check logs for errors
                     $logCheck = Run-SSHCommand -server $server -command "tail -n 20 $pgDataPath/pg_log/startup.log" -execUser $pgUser
                     Update-Output "Recent database log entries:" -server $server
@@ -814,7 +836,7 @@ function Invoke-ServerMaintenance {
         }
         $currentStep++
         $global:serverStatus[$server].Progress = [int](($currentStep / $totalSteps) * 100)
-        
+       
         # Step 7: Check barman
         $global:serverStatus[$server].CurrentStep = "Checking Barman status"
         if ($config.HasBarman) {
@@ -825,14 +847,14 @@ function Invoke-ServerMaintenance {
         }
         $currentStep++
         $global:serverStatus[$server].Progress = 100
-        
+       
         # Mark server as completed
         $global:serverStatus[$server] = @{
             Status = "Completed"
             Progress = 100
             CurrentStep = "Maintenance complete"
         }
-        
+       
         Update-Output "Maintenance completed successfully." -server $server -type "SUCCESS" -force
     }
     catch {
@@ -849,43 +871,46 @@ function Invoke-ServerMaintenance {
 function Update-Progress {
     $totalProgress = 0
     $serverCount = $global:serverStatus.Count
-    
+   
     if ($serverCount -gt 0) {
         foreach ($server in $global:serverStatus.Keys) {
             $totalProgress += $global:serverStatus[$server].Progress
         }
         $averageProgress = [int]($totalProgress / $serverCount)
-        
-        $form.Invoke([Action]{
-            $progressBar.Value = $averageProgress
-        })
+       
+        # FIX: Check if form handle is created before invoking UI update
+        if ($form.IsHandleCreated) {
+            $form.Invoke([System.Action]{
+                $progressBar.Value = $averageProgress
+            })
+        }
     }
 }
 
 # Function to run a complete maintenance cycle - COMPLETELY REWRITTEN
 function Start-MaintenanceCycle {
-    $form.Invoke([Action]{ $outputBox.Clear() })
-    
+    $form.Invoke([System.Action]{ $outputBox.Clear() })
+   
     # Reset global status
     $global:serverStatus.Clear()
     $global:logBuffer.Clear()
-    
+   
     # Get selected servers
     $selectedServers = @()
-    $form.Invoke([Action]{
+    $form.Invoke([System.Action]{
         for ($i = 0; $i -lt $serverListBox.Items.Count; $i++) {
             if ($serverListBox.GetItemChecked($i)) {
                 $selectedServers += $serverListBox.Items[$i]
             }
         }
     })
-    
+   
     if ($selectedServers.Count -eq 0) {
         Update-Output "No servers selected. Please select at least one server." "ERROR" -force
-        $form.Invoke([Action]{ $runButton.Enabled = $true })
+        $form.Invoke([System.Action]{ $runButton.Enabled = $true })
         return
     }
-    
+   
     # Get selected tasks
     $options = @{
         RepoCheck = $false
@@ -896,8 +921,8 @@ function Start-MaintenanceCycle {
         Parallel = $false
         MaxParallel = 3
     }
-    
-    $form.Invoke([Action]{
+   
+    $form.Invoke([System.Action]{
         $options.RepoCheck = $chkRepoCheck.Checked
         $options.DbStop = $chkDbStop.Checked
         $options.UpdateCheck = $chkUpdateCheck.Checked
@@ -906,7 +931,7 @@ function Start-MaintenanceCycle {
         $options.Parallel = $chkParallel.Checked
         $options.MaxParallel = [int]$numParallelServers.Value
     })
-    
+   
     # Format tasks for log
     $tasks = @()
     if ($options.RepoCheck) { $tasks += "Check repositories" }
@@ -914,9 +939,9 @@ function Start-MaintenanceCycle {
     if ($options.UpdateCheck) { $tasks += "Check for updates" }
     if ($options.UpdateApply) { $tasks += "Apply updates" }
     if ($options.Reboot) { $tasks += "Reboot servers" }
-    
+   
     Update-Output "Starting maintenance on $($selectedServers.Count) server(s) with tasks: $($tasks -join ', ')" "INFO" -force
-    
+   
     # Initialize progress trackers for each server
     foreach ($server in $selectedServers) {
         $global:serverStatus[$server] = @{
@@ -925,12 +950,23 @@ function Start-MaintenanceCycle {
             CurrentStep = "Waiting to start"
         }
     }
+   
+    # FIX: Create a runspace to update progress instead of PowerShell runspace
+    $progressUpdater = [runspacefactory]::CreateRunspace()
+    $progressUpdater.ApartmentState = [System.Threading.ApartmentState]::STA
+    $progressUpdater.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+    $progressUpdater.Open()
     
-    # Start a thread to periodically update the progress bar
-    $progressUpdater = [PowerShell]::Create().AddScript({
-        param($serverStatus)
+    # Create a PowerShell instance to run in the runspace
+    $progressPowerShell = [powershell]::Create()
+    $progressPowerShell.Runspace = $progressUpdater
+    
+    # Add script to PowerShell instance
+    [void]$progressPowerShell.AddScript({
+        param($serverStatus, $form, $progressBar)
+        
         while ($true) {
-            # Calculate average progress
+            # Calculate progress
             $totalProgress = 0
             $serverCount = $serverStatus.Count
             
@@ -939,6 +975,18 @@ function Start-MaintenanceCycle {
                     $totalProgress += $serverStatus[$server].Progress
                 }
                 $averageProgress = [int]($totalProgress / $serverCount)
+                
+                # Update progress bar if form handle is created
+                if ($form.IsHandleCreated) {
+                    try {
+                        $form.Invoke([System.Action]{
+                            $progressBar.Value = $averageProgress
+                        })
+                    }
+                    catch {
+                        # Ignore errors if form is closing
+                    }
+                }
                 
                 # Check if all servers are completed
                 $allCompleted = $true
@@ -956,64 +1004,79 @@ function Start-MaintenanceCycle {
             
             Start-Sleep -Seconds 1
         }
-    }).AddArgument($global:serverStatus)
+    }).AddArgument($global:serverStatus).AddArgument($form).AddArgument($progressBar)
     
-    $progressUpdaterJob = $progressUpdater.BeginInvoke()
-    
+    # Start the progress updater in the background
+    $progressHandle = $progressPowerShell.BeginInvoke()
+   
     # Start maintenance based on parallel option
     if ($options.Parallel) {
         # Parallel processing with throttling
         $runspacePool = [runspacefactory]::CreateRunspacePool(1, $options.MaxParallel)
         $runspacePool.Open()
-        
+       
         $jobs = @()
         $runspaces = @()
-        
+       
         foreach ($server in $selectedServers) {
             $serverIndex = $selectedServers.IndexOf($server)
-            
+           
             # Create new runspace for server
             $powerShell = [powershell]::Create()
-            $powerShell.AddScript("Invoke-ServerMaintenance")
-            $powerShell.AddParameter("server", $server)
-            $powerShell.AddParameter("options", $options)
-            $powerShell.AddParameter("serverIndex", $serverIndex)
-            $powerShell.AddParameter("totalServers", $selectedServers.Count)
             $powerShell.RunspacePool = $runspacePool
             
+            # FIX: Use a scriptblock directly instead of function reference 
+            [void]$powerShell.AddScript({
+                param($server, $options, $serverIndex, $totalServers, $scriptBlock)
+                
+                # Load the Invoke-ServerMaintenance function into this runspace
+                . ([ScriptBlock]::Create($scriptBlock))
+                
+                # Call the function
+                Invoke-ServerMaintenance -server $server -options $options -serverIndex $serverIndex -totalServers $totalServers
+            })
+            
+            # Add parameters for the script
+            [void]$powerShell.AddParameter("server", $server)
+            [void]$powerShell.AddParameter("options", $options)
+            [void]$powerShell.AddParameter("serverIndex", $serverIndex)
+            [void]$powerShell.AddParameter("totalServers", $selectedServers.Count)
+            
+            # Convert function to script block for passing to runspace
+            $functionScript = $function:Invoke-ServerMaintenance.ToString()
+            [void]$powerShell.AddParameter("scriptBlock", $functionScript)
+           
             $runspaces += @{
                 PowerShell = $powerShell
                 Handle = $powerShell.BeginInvoke()
                 Server = $server
             }
         }
-        
+       
         # Wait for all runspaces to complete
         $completed = $false
         while (-not $completed) {
             $completed = $true
-            
+           
             foreach ($runspace in $runspaces) {
                 if (-not $runspace.Handle.IsCompleted) {
                     $completed = $false
                     break
                 }
             }
-            
-            # Update progress
-            Update-Progress
-            
+           
+            # Update progress is now handled by $progressUpdater
             if (-not $completed) {
                 Start-Sleep -Milliseconds 500
             }
         }
-        
+       
         # Clean up runspaces
         foreach ($runspace in $runspaces) {
             $runspace.PowerShell.EndInvoke($runspace.Handle)
             $runspace.PowerShell.Dispose()
         }
-        
+       
         $runspacePool.Close()
         $runspacePool.Dispose()
     }
@@ -1022,34 +1085,41 @@ function Start-MaintenanceCycle {
         foreach ($server in $selectedServers) {
             $serverIndex = $selectedServers.IndexOf($server)
             Invoke-ServerMaintenance -server $server -options $options -serverIndex $serverIndex -totalServers $selectedServers.Count
-            
-            # Update progress after each server
-            Update-Progress
         }
     }
-    
+   
+    # Clean up progress updater
+    $progressPowerShell.EndInvoke($progressHandle)
+    $progressPowerShell.Dispose()
+    $progressUpdater.Close()
+    $progressUpdater.Dispose()
+   
     # Ensure all logs are written
     Update-Output "Maintenance cycle completed for all selected servers." "SUCCESS" -force
-    $form.Invoke([Action]{ 
-        $statusLabel.Text = "Maintenance complete"
-        $runButton.Enabled = $true
-        $progressBar.Value = 100
-    })
     
-    # Dispose progress updater
-    $progressUpdater.Dispose()
+    # Update UI with final status
+    if ($form.IsHandleCreated) {
+        $form.Invoke([System.Action]{
+            $statusLabel.Text = "Maintenance complete"
+            $runButton.Enabled = $true
+            $progressBar.Value = 100
+        })
+    }
 }
 
-# Button event handlers
+# FIX: Use a proper ThreadStart delegate for maintenance thread creation
 $runButton.Add_Click({
     $runButton.Enabled = $false
     $statusLabel.Text = "Running maintenance..."
     $progressBar.Value = 0
-    
+   
     # Start maintenance in a background thread to keep UI responsive
-    $maintenanceThread = New-Object System.Threading.Thread -ArgumentList({
+    $threadStart = [System.Threading.ThreadStart]{
+        # This will run in a separate thread
         Start-MaintenanceCycle
-    })
+    }
+    
+    $maintenanceThread = New-Object System.Threading.Thread($threadStart)
     $maintenanceThread.Start()
 })
 
