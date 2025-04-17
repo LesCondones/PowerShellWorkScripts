@@ -973,7 +973,8 @@ function Start-MaintenanceCycle {
             $serverIndex = $selectedServers.IndexOf($server)
             
             # Create new runspace for server
-            $powerShell = [powershell]::Create().AddScript($function:Invoke-ServerMaintenance)
+            $powerShell = [powershell]::Create()
+            $powerShell.AddScript("Invoke-ServerMaintenance")
             $powerShell.AddParameter("server", $server)
             $powerShell.AddParameter("options", $options)
             $powerShell.AddParameter("serverIndex", $serverIndex)
