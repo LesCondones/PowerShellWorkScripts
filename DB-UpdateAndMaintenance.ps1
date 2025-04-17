@@ -1,21 +1,52 @@
 # Author: Lester Artis Jr.
 # Created: 04/09/2025
-# Modified: 04/16/2025 - Performance improvements
-# Debug fixes added: 04/17/2025
+# Modified: 04/17/2025 - Debug fixes applied
 
 # Load Windows Forms and Drawing assemblies
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# Configuration paths
+# Global error handler to prevent GUI from closing on exceptions
+$null = [AppDomain]::CurrentDomain.UnhandledException.AddHandler({
+    param($sender, $e)
+    $exception = $e.ExceptionObject
+    $errorMessage = "Unhandled exception: $($exception.Message)`n`nStackTrace:`n$($exception.StackTrace)"
+    [System.Windows.Forms.MessageBox]::Show($errorMessage, "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    # Continue execution - don't let the app close
+    $e.Handled = $true
+})
+
+# Configuration paths - with fallback to current directory if main path doesn't exist
 $configPath = "C:\Powershell_scripts\check_yum"
+if (-not (Test-Path $configPath)) {
+    $configPath = $PSScriptRoot
+    if ([string]::IsNullOrEmpty($configPath)) {
+        $configPath = "."
+    }
+}
+
 $serverListFile = "$configPath\servers.txt"
 $usernameListFile = "$configPath\username.txt"
 
-# Read configuration
-$servers = Get-Content $serverListFile
-$username = Get-Content $usernameListFile
+# Read configuration with error handling
+$servers = @()
+$username = $env:USERNAME
+
+try {
+    if (Test-Path $serverListFile) {
+        $servers = Get-Content $serverListFile
+    } else {
+        # Add sample data if file doesn't exist
+        $servers = @("server1.example.com", "server2.example.com")
+    }
+
+    if (Test-Path $usernameListFile) {
+        $username = Get-Content $usernameListFile
+    }
+} catch {
+    Write-Warning "Failed to read configuration files: $_"
+}
 
 # Create a cache for server configurations
 $global:serverConfigs = @{}
@@ -23,12 +54,17 @@ $global:serverConfigs = @{}
 # Create form with improved styling
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'PostgreSQL/EDB Server Maintenance Utility'
-$form.Size = New-Object System.Drawing.Size(900, 650) # INCREASED SIZE
-$form.MinimumSize = New-Object System.Drawing.Size(800, 600) # INCREASED MINIMUM SIZE
+$form.Size = New-Object System.Drawing.Size(900, 650)
+$form.MinimumSize = New-Object System.Drawing.Size(800, 600)
 $form.StartPosition = 'CenterScreen'
 $form.BackColor = [System.Drawing.Color]::FromArgb(240, 240, 240)
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $form.Icon = [System.Drawing.SystemIcons]::Application
+
+# Create synchronized hashtables and arraylists for thread-safe operations
+$global:serverStatus = [hashtable]::Synchronized(@{})
+$global:logBuffer = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
+$global:lastUIUpdate = [DateTime]::Now
 
 # Create header panel
 $headerPanel = New-Object System.Windows.Forms.Panel
@@ -53,12 +89,11 @@ $mainContainer.RowCount = 2
 $mainContainer.ColumnCount = 2
 $mainContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 $mainContainer.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 60)))
-# ADJUSTED COLUMN WIDTHS - Give more space to the left panel
+# Adjusted column widths - Give more space to the left panel
 $mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 35)))
 $mainContainer.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 65)))
 $mainContainer.Padding = New-Object System.Windows.Forms.Padding(10)
 $form.Controls.Add($mainContainer)
-$mainContainer.BringToFront()
 
 # Create server list & controls panel (left side - Cell 0,0)
 $leftPanel = New-Object System.Windows.Forms.Panel
@@ -90,7 +125,7 @@ $serverListBox.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $serverListBox.CheckOnClick = $true
 $serverListBox.Padding = New-Object System.Windows.Forms.Padding(5)
 $serverListBox.IntegralHeight = $false
-if ($null -ne $servers) {
+if ($servers.Count -gt 0) {
     foreach ($server in $servers) {
         [void]$serverListBox.Items.Add($server, $true)
     }
@@ -159,7 +194,7 @@ $chkReboot.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $chkReboot.Margin = $checkboxMargin
 $optionsContainer.Controls.Add($chkReboot)
 
-# Advanced options - NEW
+# Advanced options
 $chkParallel = New-Object System.Windows.Forms.CheckBox
 $chkParallel.Text = "Process servers in parallel"
 $chkParallel.AutoSize = $true
@@ -168,7 +203,7 @@ $chkParallel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $chkParallel.Margin = $checkboxMargin
 $optionsContainer.Controls.Add($chkParallel)
 
-# Max parallel servers - NEW
+# Max parallel servers
 $parallelContainer = New-Object System.Windows.Forms.Panel
 $parallelContainer.Height = 28
 $parallelContainer.Width = 200
@@ -187,9 +222,9 @@ $numParallelServers.Minimum = 1
 $numParallelServers.Maximum = 10
 $numParallelServers.Value = 3  # Default to 3 parallel servers
 $numParallelServers.Width = 50
-# FIX: Use GetPreferredSize to get proper width for label
-$parallelLabelWidth = $parallelLabel.PreferredWidth
-$numParallelServers.Location = New-Object System.Drawing.Point(($parallelLabelWidth + 5), 2)
+# Use PreferredSize to get proper width for label
+$labelWidth = $parallelLabel.PreferredSize.Width
+$numParallelServers.Location = New-Object System.Drawing.Point(($labelWidth + 5), 2)
 $parallelContainer.Controls.Add($numParallelServers)
 
 # Output log panel (right side - top - Cell 1,0)
@@ -236,7 +271,6 @@ $buttonContainer.FlowDirection = [System.Windows.Forms.FlowDirection]::RightToLe
 $buttonContainer.WrapContents = $false
 $buttonContainer.Padding = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
 $controlsPanel.Controls.Add($buttonContainer)
-$buttonContainer.BringToFront()
 
 # Buttons with improved styling
 $buttonMargin = New-Object System.Windows.Forms.Padding(5, 0, 0, 0)
@@ -281,12 +315,7 @@ $statusLabel = New-Object System.Windows.Forms.ToolStripStatusLabel
 $statusLabel.Text = "Ready"
 $statusStrip.Items.Add($statusLabel)
 
-# Create a synchronized hashtable to track server status
-$global:serverStatus = [hashtable]::Synchronized(@{})
-$global:logBuffer = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList))
-$global:lastUIUpdate = [DateTime]::Now
-
-# Function to run SSH commands with specific user - IMPROVED
+# Function to run SSH commands with specific user
 function Run-SSHCommand {
     param (
         [string]$server,
@@ -328,7 +357,7 @@ function Run-SSHCommand {
     }
 }
 
-# Function to update output with color coding - IMPROVED with handle check
+# Function to update output with color coding - improved with handle check
 function Update-Output {
     param (
         [string]$message,
@@ -349,7 +378,7 @@ function Update-Output {
     # Only update UI every 500ms or if forced
     $now = [DateTime]::Now
     if ($force -or ($now - $global:lastUIUpdate).TotalMilliseconds -gt 500) {
-        # FIX: Check if form handle is created before invoking
+        # Check if form handle is created before invoking
         if ($form.IsHandleCreated) {
             try {
                 $form.Invoke([System.Action]{
@@ -383,6 +412,11 @@ function Update-Output {
             catch {
                 # Write to console if UI update fails
                 Write-Host "Error updating UI: $_"
+                foreach ($entry in $global:logBuffer) {
+                    Write-Host $entry.Message
+                }
+                $global:logBuffer.Clear()
+                $global:lastUIUpdate = $now
             }
         }
         else {
@@ -396,7 +430,7 @@ function Update-Output {
     }
 }
 
-# Function to detect server configuration - IMPROVED with caching
+# Function to detect server configuration - with caching
 function Detect-ServerConfig {
     param (
         [string]$server
@@ -526,7 +560,7 @@ function Detect-ServerConfig {
     return $config
 }
 
-# Function to check if PostgreSQL is running - IMPROVED
+# Function to check if PostgreSQL is running
 function Check-PostgreSQL {
     param (
         [string]$server,
@@ -563,7 +597,7 @@ function Check-PostgreSQL {
     }
 }
 
-# Function to check and fix Barman status - IMPROVED
+# Function to check and fix Barman status
 function Check-FixBarman {
     param (
         [string]$server,
@@ -623,8 +657,8 @@ function Check-FixBarman {
     }
 }
 
-# Function to run maintenance on a single server - NEW (for parallel processing)
-function Invoke-ServerMaintenance {
+# Define the server maintenance function as a script block to avoid function reference issues
+$InvokeServerMaintenanceScriptBlock = {
     param (
         [string]$server,
         [hashtable]$options,
@@ -632,6 +666,7 @@ function Invoke-ServerMaintenance {
         [int]$totalServers
     )
    
+    # Initialize server status
     $global:serverStatus[$server] = @{
         Status = "Running"
         Progress = 0
@@ -639,7 +674,291 @@ function Invoke-ServerMaintenance {
     }
    
     try {
-        # Detect server configuration
+        # Define all the functions we need inside this scriptblock
+        function Run-SSHCommand {
+            param (
+                [string]$server,
+                [string]$command,
+                [string]$execUser = "root",
+                [string]$connectAs = $using:username,
+                [int]$timeout = 60,
+                [switch]$noOutput
+            )
+           
+            try {
+                $sshCommand = ""
+                if ($execUser -eq "root") {
+                    # For root commands, use dzdo directly
+                    $sshCommand = "ssh -o GSSAPIAuthentication=yes -o ConnectTimeout=10 ${connectAs}@${server} `"dzdo su - -c '$command'`""
+                } else{
+                    $sshCommand = "ssh -o GSSAPIAuthentication=yes -o ConnectTimeout=10 ${connectAs}@${server} `"dzdo su -  $execUser -c '$command'`""
+                }
+               
+                # Add timeout handling for commands
+                $job = Start-Job -ScriptBlock {
+                    param($cmd)
+                    Invoke-Expression $cmd
+                } -ArgumentList $sshCommand
+               
+                # Wait for the command to complete or timeout
+                if (Wait-Job $job -Timeout $timeout) {
+                    $result = Receive-Job $job
+                    Remove-Job $job -Force
+                    return $result
+                } else {
+                    Stop-Job $job
+                    Remove-Job $job -Force
+                    return "ERROR: Command execution timed out after $timeout seconds"
+                }
+            }
+            catch {
+                return "ERROR: $_"
+            }
+        }
+
+        function Update-Output {
+            param (
+                [string]$message,
+                [string]$type = "INFO", # INFO, SUCCESS, WARNING, ERROR
+                [string]$server = "",
+                [switch]$force
+            )
+           
+            $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            $fullMessage = if ($server) { "[$timestamp] [$server] $message" } else { "[$timestamp] $message" }
+           
+            # Add to buffer
+            [void]$global:logBuffer.Add(@{
+                Message = $fullMessage
+                Type = $type
+            })
+        }
+        
+        function Detect-ServerConfig {
+            param (
+                [string]$server
+            )
+           
+            # Check cache first
+            if ($global:serverConfigs.ContainsKey($server)) {
+                Update-Output "[$server] Using cached server configuration" -server $server
+                return $global:serverConfigs[$server]
+            }
+           
+            Update-Output "Detecting server configuration..." -server $server
+           
+            # First check which database user exists: enterprisedb or postgres
+            $entDbCheck = Run-SSHCommand -server $server -command "id -u enterprisedb 2>/dev/null || echo 'Not found'" -execUser "enterprisedb"
+            $pgCheck = Run-SSHCommand -server $server -command "id -u postgres 2>/dev/null || echo 'Not found'" -execUser "postgres"
+           
+            $pgUser = ""
+            if ($entDbCheck -ne "Not found" -and $entDbCheck -notmatch "ERROR") {
+                $pgUser = "enterprisedb"
+                Update-Output "Detected enterprisedb user" -server $server
+            } elseif ($pgCheck -ne "Not found" -and $pgCheck -notmatch "ERROR") {
+                $pgUser = "postgres"
+                Update-Output "Detected postgres user" -server $server
+            } else {
+                Update-Output "ERROR: Could not detect database user (neither enterprisedb nor postgres found)" -server $server -type "ERROR"
+                return $null
+            }
+           
+            # Paths to check for EDB installs
+            $edbPaths = @(
+                "/edbas/entdb/edb-5444"
+            )
+           
+            # Paths to check for PostgreSQL installs
+            $pgPaths = @(
+                "/pgsql/pgdbs/pg-5444"
+            )
+           
+            # Select paths to check based on detected user
+            $pathsToCheck = if ($pgUser -eq "enterprisedb") { $edbPaths } else { $pgPaths }
+            $pgDataPath = ""
+           
+            # Check each potential path
+            foreach ($path in $pathsToCheck) {
+                $pathCheck = Run-SSHCommand -server $server -command "test -d $path && echo 'Found' || echo 'Not found'" -execUser $pgUser
+                if ($pathCheck -eq "Found") {
+                    $pgDataPath = $path
+                    Update-Output "Found database path: $pgDataPath" -server $server -type "SUCCESS"
+                    break
+                }
+            }
+           
+            # If no path was found, try to check environment variable
+            if ([string]::IsNullOrEmpty($pgDataPath)) {
+                $envCheck = Run-SSHCommand -server $server -command "echo \$PGDATA" -execUser $pgUser
+                if (-not [string]::IsNullOrEmpty($envCheck) -and $envCheck -ne '$PGDATA' -and $envCheck -notmatch "ERROR") {
+                    $pgDataPath = $envCheck.Trim()
+                    Update-Output "Found database path from PGDATA environment variable: $pgDataPath" -server $server -type "SUCCESS"
+                }
+            }
+           
+            # If still no path, check postmaster.pid locations
+            if ([string]::IsNullOrEmpty($pgDataPath)) {
+                $pidCheck = Run-SSHCommand -server $server -command "find / -name postmaster.pid -path '*/data/*' 2>/dev/null | head -1" -execUser "root"
+                if (-not [string]::IsNullOrEmpty($pidCheck) -and $pidCheck -notmatch "ERROR") {
+                    $pgDataPath = $pidCheck.Trim() -replace "/postmaster.pid", ""
+                    Update-Output "Found database path from postmaster.pid: $pgDataPath" -server $server -type "SUCCESS"
+                }
+            }
+           
+            # Check if barman is available
+            $barmanCheck = Run-SSHCommand -server $server -command "id -u barman 2>/dev/null || echo 'Not found'" -execUser "barman"
+            $hasBarman = ($barmanCheck -ne "Not found" -and $barmanCheck -notmatch "ERROR")
+           
+            # Determine barman database name
+            $barmanName = ""
+            $barmanUser = ""
+            if ($hasBarman) {
+                $barmanUser = "barman"
+               
+                # Check what barman servers are configured
+                $barmanServers = Run-SSHCommand -server $server -command "barman list-server 2>/dev/null || echo 'Not configured'" -execUser $barmanUser
+               
+                if ($barmanServers -notmatch "Not configured" -and $barmanServers -notmatch "ERROR") {
+                    # Use first available barman server
+                    $barmanName = ($barmanServers -split '\n')[0].Trim()
+                    Update-Output "Found barman configuration for: $barmanName" -server $server -type "SUCCESS"
+                } else {
+                    # Guess based on user type
+                    if ($pgUser -eq "enterprisedb") {
+                        $barmanName = "edb-5444"
+                    } else {
+                        $barmanName = "pg-5444"
+                    }
+                   
+                    # Check if this guess is valid
+                    $barmanConfigCheck = Run-SSHCommand -server $server -command "barman show-server $barmanName 2>/dev/null || echo 'Not configured'" -execUser $barmanUser
+                    if ($barmanConfigCheck -match "Not configured" -or $barmanConfigCheck -match "ERROR") {
+                        $hasBarman = $false
+                        Update-Output "Barman is installed but $barmanName is not configured" -server $server -type "WARNING"
+                    } else {
+                        Update-Output "Found barman configuration for: $barmanName" -server $server -type "SUCCESS"
+                    }
+                }
+            }
+           
+            # Return the configuration
+            if ([string]::IsNullOrEmpty($pgDataPath)) {
+                Update-Output "WARNING: Could not detect database data path" -server $server -type "WARNING"
+                return $null
+            }
+           
+            Update-Output "Configuration detected successfully" -server $server -type "SUCCESS"
+           
+            $config = @{
+                PgUser = $pgUser
+                PgDataPath = $pgDataPath
+                HasBarman = $hasBarman
+                BarmanUser = $barmanUser
+                BarmanName = $barmanName
+            }
+           
+            # Cache the configuration
+            $global:serverConfigs[$server] = $config
+           
+            return $config
+        }
+        
+        function Check-PostgreSQL {
+            param (
+                [string]$server,
+                [string]$pgUser,
+                [string]$pgDataPath,
+                [string]$pgPort = "5444"
+            )
+           
+            # Check if process is running
+            $processPattern = if ($pgUser -eq "enterprisedb") { "enterpr+" } else { "postgres" }
+            $processCheck = Run-SSHCommand -server $server -command "ps -ef | grep -E $processPattern | grep -v grep" -execUser $pgUser
+            $processRunning = ($processCheck -match "postgres")
+           
+            # Check socket connectivity using pg_isready (faster than psql)
+            $readyCheck = Run-SSHCommand -server $server -command "pg_isready -p $pgPort 2>&1 || echo 'Not ready'" -execUser $pgUser
+            $isReady = ($readyCheck -match "accepting connections")
+           
+            # Only test with psql if the process is running but not ready
+            $socketConnected = $isReady
+            $socketError = $false
+           
+            if ($processRunning -and -not $isReady) {
+                $socketCheck = Run-SSHCommand -server $server -command "psql -p $pgPort -c 'SELECT 1' 2>&1 || echo 'Connection failed'" -execUser $pgUser
+                $socketConnected = !($socketCheck -match "Connection failed" -or $socketCheck -match "failed" -or $socketCheck -match "ERROR")
+                $socketError = ($socketCheck -match "socket.*failed: No such file or directory")
+            }
+           
+            # Return combined status
+            return @{
+                ProcessRunning = $processRunning
+                SocketConnected = $socketConnected
+                SocketError = $socketError
+                IsHealthy = ($processRunning -and $socketConnected)
+            }
+        }
+        
+        function Check-FixBarman {
+            param (
+                [string]$server,
+                [string]$barmanUser,
+                [string]$barmanName = "edb-5444"
+            )
+           
+            Update-Output "Checking barman status..." -server $server
+            $result = Run-SSHCommand -server $server -command "barman check $barmanName" -execUser $barmanUser
+           
+            $needsRecheck = $false
+           
+            # Check for replication slot missing error and fix
+            if ($result -match "replication slot .* doesn't exist") {
+                Update-Output "Replication slot missing. Creating slot..." -server $server -type "WARNING"
+                $createSlotResult = Run-SSHCommand -server $server -command "barman receive-wal --create-slot $barmanName" -execUser $barmanUser -timeout 30
+                Update-Output "Create slot result: $createSlotResult" -server $server
+                $needsRecheck = $true
+            }
+           
+            # Check for receive-wal not running error and fix
+            if ($result -match "receive-wal running: FAILED") {
+                Update-Output "WAL receiver not running. Starting WAL receiver..." -server $server -type "WARNING"
+                # Use nohup to run in background
+                $receiveWalResult = Run-SSHCommand -server $server -command "nohup barman receive-wal $barmanName > /dev/null 2>&1 &" -execUser $barmanUser
+                Update-Output "Start WAL receiver result: $receiveWalResult" -server $server
+                $needsRecheck = $true
+            }
+           
+            # Final verification
+            if ($needsRecheck) {
+                Start-Sleep -Seconds 3  # Reduced wait time
+               
+                Update-Output "Performing final barman check..." -server $server
+                $finalCheck = Run-SSHCommand -server $server -command "barman check $barmanName" -execUser $barmanUser
+               
+                # Log only the failed checks for efficiency
+                $failedChecks = $finalCheck -split '\n' | Where-Object { $_ -match 'FAILED' }
+                if ($failedChecks) {
+                    Update-Output "Barman status - failed checks:" -server $server
+                    foreach ($check in $failedChecks) {
+                        Update-Output $check -server $server
+                    }
+                }
+               
+                if ($finalCheck -match "FAILED") {
+                    Update-Output "WARNING: Some barman checks still failing after fixes." -server $server -type "WARNING"
+                    return $false
+                } else {
+                    Update-Output "All barman checks passed successfully." -server $server -type "SUCCESS"
+                    return $true
+                }
+            } else {
+                # If no fixes needed, just return success
+                Update-Output "All barman checks passed successfully." -server $server -type "SUCCESS"
+                return $true
+            }
+        }
+
+        # Start the actual maintenance work
         Update-Output "Starting maintenance..." -server $server
         $config = Detect-ServerConfig -server $server
        
@@ -712,7 +1031,7 @@ function Invoke-ServerMaintenance {
             $global:serverStatus[$server].Progress = [int](($currentStep / $totalSteps) * 100)
         }
        
-        # Step 4: Apply Updates - SIGNIFICANTLY IMPROVED TIMEOUT
+        # Step 4: Apply Updates
         if ($options.UpdateApply) {
             $global:serverStatus[$server].CurrentStep = "Applying updates"
             Update-Output "Applying updates as root (this may take several minutes)..." -server $server
@@ -869,258 +1188,239 @@ function Invoke-ServerMaintenance {
 
 # Function to update progress bar from server status
 function Update-Progress {
-    $totalProgress = 0
-    $serverCount = $global:serverStatus.Count
-   
-    if ($serverCount -gt 0) {
-        foreach ($server in $global:serverStatus.Keys) {
-            $totalProgress += $global:serverStatus[$server].Progress
-        }
-        $averageProgress = [int]($totalProgress / $serverCount)
+    if (-not $form.IsHandleCreated) {
+        return
+    }
+
+    try {
+        $totalProgress = 0
+        $serverCount = $global:serverStatus.Count
        
-        # FIX: Check if form handle is created before invoking UI update
-        if ($form.IsHandleCreated) {
+        if ($serverCount -gt 0) {
+            foreach ($server in $global:serverStatus.Keys) {
+                $totalProgress += $global:serverStatus[$server].Progress
+            }
+            $averageProgress = [int]($totalProgress / $serverCount)
+           
             $form.Invoke([System.Action]{
                 $progressBar.Value = $averageProgress
             })
         }
     }
+    catch {
+        Write-Host "Error updating progress: $_"
+    }
 }
 
-# Function to run a complete maintenance cycle - COMPLETELY REWRITTEN
+# Function to run a complete maintenance cycle
 function Start-MaintenanceCycle {
-    $form.Invoke([System.Action]{ $outputBox.Clear() })
-   
-    # Reset global status
-    $global:serverStatus.Clear()
-    $global:logBuffer.Clear()
-   
-    # Get selected servers
-    $selectedServers = @()
-    $form.Invoke([System.Action]{
-        for ($i = 0; $i -lt $serverListBox.Items.Count; $i++) {
-            if ($serverListBox.GetItemChecked($i)) {
-                $selectedServers += $serverListBox.Items[$i]
+    try {
+        if ($form.IsHandleCreated) {
+            $form.Invoke([System.Action]{ 
+                $outputBox.Clear() 
+                $runButton.Enabled = $false
+                $statusLabel.Text = "Running maintenance..."
+                $progressBar.Value = 0
+            })
+        }
+       
+        # Reset global status
+        $global:serverStatus.Clear()
+        $global:logBuffer.Clear()
+       
+        # Get selected servers
+        $selectedServers = @()
+        $form.Invoke([System.Action]{
+            for ($i = 0; $i -lt $serverListBox.Items.Count; $i++) {
+                if ($serverListBox.GetItemChecked($i)) {
+                    $selectedServers += $serverListBox.Items[$i]
+                }
+            }
+        })
+       
+        if ($selectedServers.Count -eq 0) {
+            Update-Output "No servers selected. Please select at least one server." "ERROR" -force
+            $form.Invoke([System.Action]{ $runButton.Enabled = $true })
+            return
+        }
+       
+        # Get selected tasks
+        $options = @{
+            RepoCheck = $false
+            DbStop = $false
+            UpdateCheck = $false
+            UpdateApply = $false
+            Reboot = $false
+            Parallel = $false
+            MaxParallel = 3
+        }
+       
+        $form.Invoke([System.Action]{
+            $options.RepoCheck = $chkRepoCheck.Checked
+            $options.DbStop = $chkDbStop.Checked
+            $options.UpdateCheck = $chkUpdateCheck.Checked
+            $options.UpdateApply = $chkUpdateApply.Checked
+            $options.Reboot = $chkReboot.Checked
+            $options.Parallel = $chkParallel.Checked
+            $options.MaxParallel = [int]$numParallelServers.Value
+        })
+       
+        # Format tasks for log
+        $tasks = @()
+        if ($options.RepoCheck) { $tasks += "Check repositories" }
+        if ($options.DbStop) { $tasks += "Stop database" }
+        if ($options.UpdateCheck) { $tasks += "Check for updates" }
+        if ($options.UpdateApply) { $tasks += "Apply updates" }
+        if ($options.Reboot) { $tasks += "Reboot servers" }
+       
+        Update-Output "Starting maintenance on $($selectedServers.Count) server(s) with tasks: $($tasks -join ', ')" "INFO" -force
+       
+        # Initialize progress trackers for each server
+        foreach ($server in $selectedServers) {
+            $global:serverStatus[$server] = @{
+                Status = "Pending"
+                Progress = 0
+                CurrentStep = "Waiting to start"
             }
         }
-    })
-   
-    if ($selectedServers.Count -eq 0) {
-        Update-Output "No servers selected. Please select at least one server." "ERROR" -force
-        $form.Invoke([System.Action]{ $runButton.Enabled = $true })
-        return
-    }
-   
-    # Get selected tasks
-    $options = @{
-        RepoCheck = $false
-        DbStop = $false
-        UpdateCheck = $false
-        UpdateApply = $false
-        Reboot = $false
-        Parallel = $false
-        MaxParallel = 3
-    }
-   
-    $form.Invoke([System.Action]{
-        $options.RepoCheck = $chkRepoCheck.Checked
-        $options.DbStop = $chkDbStop.Checked
-        $options.UpdateCheck = $chkUpdateCheck.Checked
-        $options.UpdateApply = $chkUpdateApply.Checked
-        $options.Reboot = $chkReboot.Checked
-        $options.Parallel = $chkParallel.Checked
-        $options.MaxParallel = [int]$numParallelServers.Value
-    })
-   
-    # Format tasks for log
-    $tasks = @()
-    if ($options.RepoCheck) { $tasks += "Check repositories" }
-    if ($options.DbStop) { $tasks += "Stop database" }
-    if ($options.UpdateCheck) { $tasks += "Check for updates" }
-    if ($options.UpdateApply) { $tasks += "Apply updates" }
-    if ($options.Reboot) { $tasks += "Reboot servers" }
-   
-    Update-Output "Starting maintenance on $($selectedServers.Count) server(s) with tasks: $($tasks -join ', ')" "INFO" -force
-   
-    # Initialize progress trackers for each server
-    foreach ($server in $selectedServers) {
-        $global:serverStatus[$server] = @{
-            Status = "Pending"
-            Progress = 0
-            CurrentStep = "Waiting to start"
-        }
-    }
-   
-    # FIX: Create a runspace to update progress instead of PowerShell runspace
-    $progressUpdater = [runspacefactory]::CreateRunspace()
-    $progressUpdater.ApartmentState = [System.Threading.ApartmentState]::STA
-    $progressUpdater.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
-    $progressUpdater.Open()
-    
-    # Create a PowerShell instance to run in the runspace
-    $progressPowerShell = [powershell]::Create()
-    $progressPowerShell.Runspace = $progressUpdater
-    
-    # Add script to PowerShell instance
-    [void]$progressPowerShell.AddScript({
-        param($serverStatus, $form, $progressBar)
-        
-        while ($true) {
-            # Calculate progress
-            $totalProgress = 0
-            $serverCount = $serverStatus.Count
+       
+        # Create a timer for progress updates
+        $progressTimer = New-Object System.Timers.Timer
+        $progressTimer.Interval = 1000 # Update every second
+        $progressTimer.AutoReset = $true
+        $progressTimer.Enabled = $true
+        $progressTimer.add_Elapsed({
+            Update-Progress
             
-            if ($serverCount -gt 0) {
-                foreach ($server in $serverStatus.Keys) {
-                    $totalProgress += $serverStatus[$server].Progress
+            # Check if all servers are completed
+            $allCompleted = $true
+            foreach ($server in $global:serverStatus.Keys) {
+                if ($global:serverStatus[$server].Status -ne "Completed" -and $global:serverStatus[$server].Status -ne "Failed") {
+                    $allCompleted = $false
+                    break
                 }
-                $averageProgress = [int]($totalProgress / $serverCount)
+            }
+            
+            if ($allCompleted) {
+                $this.Enabled = $false
+                $this.Dispose()
+            }
+        })
+        $progressTimer.Start()
+       
+        # Start maintenance based on parallel option
+        if ($options.Parallel) {
+            # Parallel processing with throttling
+            $runspacePool = [runspacefactory]::CreateRunspacePool(1, $options.MaxParallel)
+            $runspacePool.Open()
+           
+            $runspaces = @()
+           
+            foreach ($server in $selectedServers) {
+                $serverIndex = $selectedServers.IndexOf($server)
+               
+                # Create new runspace for server
+                $powerShell = [powershell]::Create()
+                $powerShell.RunspacePool = $runspacePool
                 
-                # Update progress bar if form handle is created
-                if ($form.IsHandleCreated) {
-                    try {
-                        $form.Invoke([System.Action]{
-                            $progressBar.Value = $averageProgress
-                        })
-                    }
-                    catch {
-                        # Ignore errors if form is closing
-                    }
+                # Add scriptblock and parameters directly
+                [void]$powerShell.AddScript($InvokeServerMaintenanceScriptBlock)
+                [void]$powerShell.AddParameter("server", $server)
+                [void]$powerShell.AddParameter("options", $options)
+                [void]$powerShell.AddParameter("serverIndex", $serverIndex)
+                [void]$powerShell.AddParameter("totalServers", $selectedServers.Count)
+               
+                $runspaces += @{
+                    PowerShell = $powerShell
+                    Handle = $powerShell.BeginInvoke()
+                    Server = $server
                 }
-                
-                # Check if all servers are completed
-                $allCompleted = $true
-                foreach ($server in $serverStatus.Keys) {
-                    if ($serverStatus[$server].Status -ne "Completed" -and $serverStatus[$server].Status -ne "Failed") {
-                        $allCompleted = $false
+            }
+           
+            # Wait for all runspaces to complete
+            $completed = $false
+            while (-not $completed) {
+                $completed = $true
+               
+                foreach ($runspace in $runspaces) {
+                    if (-not $runspace.Handle.IsCompleted) {
+                        $completed = $false
                         break
                     }
                 }
-                
-                if ($allCompleted) {
-                    break
+               
+                if (-not $completed) {
+                    Start-Sleep -Milliseconds 500
                 }
             }
-            
-            Start-Sleep -Seconds 1
-        }
-    }).AddArgument($global:serverStatus).AddArgument($form).AddArgument($progressBar)
-    
-    # Start the progress updater in the background
-    $progressHandle = $progressPowerShell.BeginInvoke()
-   
-    # Start maintenance based on parallel option
-    if ($options.Parallel) {
-        # Parallel processing with throttling
-        $runspacePool = [runspacefactory]::CreateRunspacePool(1, $options.MaxParallel)
-        $runspacePool.Open()
-       
-        $jobs = @()
-        $runspaces = @()
-       
-        foreach ($server in $selectedServers) {
-            $serverIndex = $selectedServers.IndexOf($server)
            
-            # Create new runspace for server
-            $powerShell = [powershell]::Create()
-            $powerShell.RunspacePool = $runspacePool
-            
-            # FIX: Use a scriptblock directly instead of function reference 
-            [void]$powerShell.AddScript({
-                param($server, $options, $serverIndex, $totalServers, $scriptBlock)
-                
-                # Load the Invoke-ServerMaintenance function into this runspace
-                . ([ScriptBlock]::Create($scriptBlock))
-                
-                # Call the function
-                Invoke-ServerMaintenance -server $server -options $options -serverIndex $serverIndex -totalServers $totalServers
-            })
-            
-            # Add parameters for the script
-            [void]$powerShell.AddParameter("server", $server)
-            [void]$powerShell.AddParameter("options", $options)
-            [void]$powerShell.AddParameter("serverIndex", $serverIndex)
-            [void]$powerShell.AddParameter("totalServers", $selectedServers.Count)
-            
-            # Convert function to script block for passing to runspace
-            $functionScript = $function:Invoke-ServerMaintenance.ToString()
-            [void]$powerShell.AddParameter("scriptBlock", $functionScript)
-           
-            $runspaces += @{
-                PowerShell = $powerShell
-                Handle = $powerShell.BeginInvoke()
-                Server = $server
-            }
-        }
-       
-        # Wait for all runspaces to complete
-        $completed = $false
-        while (-not $completed) {
-            $completed = $true
-           
+            # Clean up runspaces
             foreach ($runspace in $runspaces) {
-                if (-not $runspace.Handle.IsCompleted) {
-                    $completed = $false
-                    break
+                try {
+                    $runspace.PowerShell.EndInvoke($runspace.Handle)
+                    $runspace.PowerShell.Dispose()
+                } catch {
+                    Write-Host "Error cleaning up runspace: $_"
                 }
             }
            
-            # Update progress is now handled by $progressUpdater
-            if (-not $completed) {
-                Start-Sleep -Milliseconds 500
+            $runspacePool.Close()
+            $runspacePool.Dispose()
+        }
+        else {
+            # Sequential processing
+            foreach ($server in $selectedServers) {
+                $serverIndex = $selectedServers.IndexOf($server)
+                
+                # Invoke the scriptblock directly
+                Invoke-Command -ScriptBlock $InvokeServerMaintenanceScriptBlock -ArgumentList $server, $options, $serverIndex, $selectedServers.Count
             }
         }
        
-        # Clean up runspaces
-        foreach ($runspace in $runspaces) {
-            $runspace.PowerShell.EndInvoke($runspace.Handle)
-            $runspace.PowerShell.Dispose()
+        # Stop and dispose the timer if it's still running
+        if ($progressTimer.Enabled) {
+            $progressTimer.Stop()
+            $progressTimer.Dispose()
         }
        
-        $runspacePool.Close()
-        $runspacePool.Dispose()
-    }
-    else {
-        # Sequential processing
-        foreach ($server in $selectedServers) {
-            $serverIndex = $selectedServers.IndexOf($server)
-            Invoke-ServerMaintenance -server $server -options $options -serverIndex $serverIndex -totalServers $selectedServers.Count
+        # Ensure all logs are written
+        Update-Output "Maintenance cycle completed for all selected servers." "SUCCESS" -force
+        if ($form.IsHandleCreated) {
+            $form.Invoke([System.Action]{
+                $statusLabel.Text = "Maintenance complete"
+                $runButton.Enabled = $true
+                $progressBar.Value = 100
+            })
         }
     }
-   
-    # Clean up progress updater
-    $progressPowerShell.EndInvoke($progressHandle)
-    $progressPowerShell.Dispose()
-    $progressUpdater.Close()
-    $progressUpdater.Dispose()
-   
-    # Ensure all logs are written
-    Update-Output "Maintenance cycle completed for all selected servers." "SUCCESS" -force
-    
-    # Update UI with final status
-    if ($form.IsHandleCreated) {
-        $form.Invoke([System.Action]{
-            $statusLabel.Text = "Maintenance complete"
-            $runButton.Enabled = $true
-            $progressBar.Value = 100
-        })
+    catch {
+        Update-Output "ERROR in maintenance coordinator: $_" "ERROR" -force
+        if ($form.IsHandleCreated) {
+            $form.Invoke([System.Action]{
+                $statusLabel.Text = "Error in maintenance process"
+                $runButton.Enabled = $true
+            })
+        }
     }
 }
 
-# FIX: Use a proper ThreadStart delegate for maintenance thread creation
+# Button event handlers
 $runButton.Add_Click({
-    $runButton.Enabled = $false
-    $statusLabel.Text = "Running maintenance..."
-    $progressBar.Value = 0
-   
-    # Start maintenance in a background thread to keep UI responsive
-    $threadStart = [System.Threading.ThreadStart]{
-        # This will run in a separate thread
-        Start-MaintenanceCycle
+    try {
+        # Create a separate thread for running maintenance
+        $thread = [System.Threading.Thread]::new([System.Threading.ThreadStart]{
+            Start-MaintenanceCycle
+        })
+        $thread.IsBackground = $true  # Make thread background so it doesn't prevent app exit
+        $thread.Start()
     }
-    
-    $maintenanceThread = New-Object System.Threading.Thread($threadStart)
-    $maintenanceThread.Start()
+    catch {
+        $errorMessage = "Error starting maintenance thread: $_"
+        [System.Windows.Forms.MessageBox]::Show($errorMessage, "Error", 
+            [System.Windows.Forms.MessageBoxButtons]::OK, 
+            [System.Windows.Forms.MessageBoxIcon]::Error)
+        $runButton.Enabled = $true
+    }
 })
 
 $clearButton.Add_Click({
@@ -1129,14 +1429,38 @@ $clearButton.Add_Click({
 })
 
 $saveButton.Add_Click({
-    $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
-    $saveDialog.Filter = "Log Files (*.log)|*.log|Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
-    $saveDialog.Title = "Save Log File"
-    $saveDialog.FileName = "ServerMaintenance_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-   
-    if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $outputBox.Text | Out-File -FilePath $saveDialog.FileName
-        $statusLabel.Text = "Log saved to $($saveDialog.FileName)"
+    try {
+        $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+        $saveDialog.Filter = "Log Files (*.log)|*.log|Text Files (*.txt)|*.txt|All Files (*.*)|*.*"
+        $saveDialog.Title = "Save Log File"
+        $saveDialog.FileName = "ServerMaintenance_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+       
+        if ($saveDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $outputBox.Text | Out-File -FilePath $saveDialog.FileName
+            $statusLabel.Text = "Log saved to $($saveDialog.FileName)"
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Error saving log: $_", "Error", 
+            [System.Windows.Forms.MessageBoxButtons]::OK, 
+            [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+})
+
+# Form closing event handler to clean up resources
+$form.Add_FormClosing({
+    try {
+        # Clean up any runspaces or timers
+        foreach ($runspace in $runspaces) {
+            if ($runspace -ne $null) {
+                if ($runspace.PowerShell -ne $null) {
+                    $runspace.PowerShell.Dispose()
+                }
+            }
+        }
+    }
+    catch {
+        # Silently handle errors during cleanup
     }
 })
 
@@ -1145,5 +1469,5 @@ Update-Output "PostgreSQL/EDB Server Maintenance Utility started" "INFO" -force
 Update-Output "Found $($servers.Count) servers in configuration" "INFO" -force
 Update-Output "Ready to start maintenance. Select servers and options, then click 'Run Maintenance'" "INFO" -force
 
-# Show the form
-$form.ShowDialog()
+# Show the form (using Application.Run for better stability)
+[System.Windows.Forms.Application]::Run($form)
