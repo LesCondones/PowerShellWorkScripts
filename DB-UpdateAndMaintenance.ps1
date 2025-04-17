@@ -343,6 +343,7 @@ function Update-Output {
     # Only update UI every 500ms or if forced
     $now = [DateTime]::Now
     if ($force -or ($now - $global:lastUIUpdate).TotalMilliseconds -gt 500) {
+        if($form.IsHandleCreated){
         $form.Invoke([Action]{
             foreach ($entry in $global:logBuffer) {
                 # Set color based on message type
@@ -1045,7 +1046,7 @@ $runButton.Add_Click({
     $progressBar.Value = 0
     
     # Start maintenance in a background thread to keep UI responsive
-    $maintenanceThread = [System.Threading.Thread]::new({
+    $maintenanceThread = New-Object System.Threading.Thread -ArgumentList({
         Start-MaintenanceCycle
     })
     $maintenanceThread.Start()
