@@ -258,7 +258,7 @@ function Run-SSHCommand {
         [string]$command,
         [string]$execUser = "root",
         [string]$connectAs = $username,
-        [int]$timeout = 60
+        [int]$timeout = 300
     )
    
     try {
@@ -480,7 +480,8 @@ function Check-PostgreSQL {
 function Check-FixBarman {
     param (
         [string]$server,
-        [string]$barmanUser
+        [string]$barmanUser,
+        
     )
    
     Update-Output "[$server] Checking barman status..."
@@ -568,7 +569,7 @@ function Start-MaintenanceCycle {
         # Step 1: Check Repositories (explicitly as root)
         if ($chkRepoCheck.Checked) {
             Update-Output "[$server] Checking enabled repositories as root..."
-            $result = Run-SSHCommand -server $server -command "yum repolist enabled" -execUser $execUser
+            $result = Run-SSHCommand -server $server -command "yum repolist enabled" -execUser "root"
             if ($result -match "ERROR") {
                 Update-Output "[$server] Failed to check repositories: $result" "ERROR"
             }
@@ -600,7 +601,7 @@ function Start-MaintenanceCycle {
         # Step 3: Check Updates (as root)
         if ($chkUpdateCheck.Checked) {
             Update-Output "[$server] Checking for updates as root..."
-            $result = Run-SSHCommand -server $server -command "yum check-update" -execUser $execUser
+            $result = Run-SSHCommand -server $server -command "yum check-update" -execUser "root"
             if ($result -match "ERROR") {
                 Update-Output "[$server] Failed to check updates: $result" "ERROR"
             }
@@ -616,7 +617,7 @@ function Start-MaintenanceCycle {
         # Step 4: Apply Updates (as root)
         if ($chkUpdateApply.Checked) {
             Update-Output "[$server] Applying updates as root..."
-            $result = Run-SSHCommand -server $server -command "yum -y update" -execUser $execUser
+            $result = Run-SSHCommand -server $server -command "yum -y update" -execUser "root" -timeout 600
             if ($result -match "ERROR") {
                 Update-Output "[$server] Failed to apply updates: $result" "ERROR"
             }
