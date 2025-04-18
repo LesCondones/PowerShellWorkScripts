@@ -401,7 +401,7 @@ function Detect-ServerConfig {
         $barmanUser = "barman"
        
         # Check what barman servers are configured
-        $barmanServers = Run-SSHCommand -server $server -command "barman list-server 2>/dev/null || echo 'Not configured'" -execUser $barmanUser
+        $barmanServers = Run-SSHCommand -server $server -command "barman list-server 2>/dev/null || echo 'Not configured'" -execUser "barman"
        
         if ($barmanServers -notmatch "Not configured" -and $barmanServers -notmatch "ERROR") {
             # Use first available barman server
@@ -416,7 +416,7 @@ function Detect-ServerConfig {
             }
            
             # Check if this guess is valid
-            $barmanConfigCheck = Run-SSHCommand -server $server -command "barman show-server $barmanName 2>/dev/null || echo 'Not configured'" -execUser $barmanUser
+            $barmanConfigCheck = Run-SSHCommand -server $server -command "barman show-server $barmanName 2>/dev/null || echo 'Not configured'" -execUser "barman"
             if ($barmanConfigCheck -match "Not configured" -or $barmanConfigCheck -match "ERROR") {
                 $hasBarman = $false
                 Update-Output "[$server] Barman is installed but $barmanName is not configured" "WARNING"
