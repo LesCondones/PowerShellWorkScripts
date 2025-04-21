@@ -623,6 +623,9 @@ function Start-MaintenanceCycle {
             }
             else {
                 Update-Output "[$server] Updates applied successfully." "SUCCESS"
+                # Buffer time after updates
+                Start-Sleep -Seconds 240
+                Update-Output "[$server] Waiting 240 seconds after updates before intiatiing reboot"
             }
         } else {
             Update-Output "[$server] Skipping update application (disabled in options)"
